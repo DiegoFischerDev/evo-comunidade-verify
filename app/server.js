@@ -1,7 +1,8 @@
 const express = require('express');
 
 const app = express();
-app.use(express.json({ limit: '1mb' }));
+// Evolution envia payloads grandes (mensagens, metadados, mídia em base64); 1mb causava 413 no Nginx/Express
+app.use(express.json({ limit: '25mb' }));
 
 const PORT = process.env.PORT || 3100;
 

@@ -30,6 +30,14 @@ O receiver compara o header **`x-webhook-secret`** com **`WEBHOOK_SECRET`** do a
 
 Em produção, o Nginx em `wa-verify` deve fazer **`proxy_set_header x-webhook-secret "<mesmo valor que WEBHOOK_SECRET>";`** no `location` que faz `proxy_pass` para o receiver. Assim os pedidos HTTPS funcionam **sem** colocares o segredo à mão no `curl`.
 
+Se a Evolution logar **`413`** / **`Payload Too Large`**, o corpo do webhook excede o limite. No **mesmo** `server` ou `location /` do `wa-verify`, adiciona:
+
+```nginx
+client_max_body_size 25M;
+```
+
+(Valor alinhado com o limite JSON do `server.js`, `25mb`.)
+
 **Não uses** texto placeholder tipo `SEU_WEBHOOK_SECRET_DO_ENV` no header: isso **não** é o valor real e resulta em **403 Forbidden**.
 
 ### Testar o receiver na VPS

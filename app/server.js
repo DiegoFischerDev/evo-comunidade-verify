@@ -42,11 +42,13 @@ function normalizeWhatsappFromJid(remoteJid) {
 }
 
 function extractCode(text) {
-  // Aceita: "codigo: 99999" / "código: 99999" / "codigo 99999"
-  const m = String(text || '')
+  const t = String(text || '')
     .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .match(/codigo\s*:?\s*(\d{4,8})/i);
+    .replace(/[\u0300-\u036f]/g, '');
+  // "meu codigo é 123456" (registo RPM) ou "codigo: 12345"
+  let m = t.match(/(?:meu\s+)?codigo\s*(?:é|e|=|:)?\s*(\d{4,8})/i);
+  if (m) return m[1];
+  m = t.match(/codigo\s*:?\s*(\d{4,8})/i);
   return m ? m[1] : null;
 }
 

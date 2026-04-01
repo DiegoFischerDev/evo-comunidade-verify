@@ -1,11 +1,28 @@
 # VPS (sem nginx no container). O nginx do host faz proxy para as portas locais.
 
 services:
+  evolution_db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: evolution
+      POSTGRES_PASSWORD: ${EVOLUTION_DB_PASSWORD}
+      POSTGRES_DB: evolution
+    volumes:
+      - evolution_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U evolution"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   evolution:
     image: atendai/evolution-api:latest
     restart: unless-stopped
     environment:
       AUTHENTICATION_API_KEY: ${EVOLUTION_API_KEY}
+      DATABASE_PROVIDER: postgresql
+      DATABASE_CONNECTION_URI: postgresql://evolution:${EVOLUTION_DB_PASSWORD}@evolution_db:5432/evolution?schema=public
       # Importante: ajuste conforme sua configuração/versão da Evolution
       # Webhook para eventos de mensagem
       WEBHOOK_GLOBAL_URL: ${WEBHOOK_PUBLIC_URL}
@@ -13,6 +30,9 @@ services:
       WEBHOOK_EVENTS_MESSAGES_UPSERT: "true"
       # instance default (pode criar pelo painel/endpoint também)
       DEFAULT_INSTANCE: ${EVOLUTION_INSTANCE:-comunidade}
+    depends_on:
+      evolution_db:
+        condition: service_healthy
     ports:
       - "127.0.0.1:18080:8080"
     volumes:
@@ -35,4 +55,5 @@ services:
 volumes:
   evolution_store:
   evolution_instances:
+  evolution_db_data:
 

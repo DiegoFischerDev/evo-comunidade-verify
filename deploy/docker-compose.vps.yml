@@ -1,4 +1,5 @@
 # VPS (sem nginx no container). O nginx do host faz proxy para as portas locais.
+# Evolution v2.x: Redis oficial = CACHE_REDIS_* (REDIS_URI sozinho costuma dar "redis disconnected").
 
 services:
   evolution_db:
@@ -16,23 +17,31 @@ services:
       timeout: 5s
       retries: 10
 
+  evolution_redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
   evolution:
-    image: atendai/evolution-api:latest
+    image: evoapicloud/evolution-api:v2.3.7
     restart: unless-stopped
     environment:
       AUTHENTICATION_API_KEY: ${EVOLUTION_API_KEY}
       DATABASE_PROVIDER: postgresql
       DATABASE_CONNECTION_URI: postgresql://evolution:${EVOLUTION_DB_PASSWORD}@evolution_db:5432/evolution?schema=public
-      # Importante: ajuste conforme sua configuração/versão da Evolution
-      # Webhook para eventos de mensagem
+
+      CACHE_REDIS_ENABLED: "true"
+      CACHE_REDIS_URI: redis://evolution_redis:6379/6
+      CACHE_REDIS_PREFIX_KEY: evolution
+
       WEBHOOK_GLOBAL_URL: ${WEBHOOK_PUBLIC_URL}
       WEBHOOK_GLOBAL_ENABLED: "true"
       WEBHOOK_EVENTS_MESSAGES_UPSERT: "true"
-      # instance default (pode criar pelo painel/endpoint também)
       DEFAULT_INSTANCE: ${EVOLUTION_INSTANCE:-comunidade}
     depends_on:
       evolution_db:
         condition: service_healthy
+      evolution_redis:
+        condition: service_started
     ports:
       - "127.0.0.1:18080:8080"
     volumes:
@@ -56,4 +65,3 @@ volumes:
   evolution_store:
   evolution_instances:
   evolution_db_data:
-

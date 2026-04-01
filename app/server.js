@@ -13,6 +13,12 @@ const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || '';
 const COMMUNITY_API_URL = (process.env.COMMUNITY_API_URL || '').replace(/\/$/, '');
 const COMMUNITY_INTERNAL_SECRET = process.env.COMMUNITY_INTERNAL_SECRET || '';
 
+/** Junta mensagens do mesmo número numa janela de silêncio antes de confirmar no backend */
+const DEBOUNCE_MS = Number(process.env.WHATSAPP_INBOUND_DEBOUNCE_MS || 10000);
+
+/** @type {Map<string, { parts: string[], timer: ReturnType<typeof setTimeout> | null }>} */
+const incomingBuffers = new Map();
+
 function extractTextFromEvolution(data) {
   // Evolution costuma mandar payload com estrutura "data.message" (varia por versão)
   const msg =
@@ -45,11 +51,15 @@ function extractCode(text) {
   const t = String(text || '')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '');
-  // "meu codigo é 123456" (registo RPM) ou "codigo: 12345"
   let m = t.match(/(?:meu\s+)?codigo\s*(?:é|e|=|:)?\s*(\d{4,8})/i);
   if (m) return m[1];
   m = t.match(/codigo\s*:?\s*(\d{4,8})/i);
-  return m ? m[1] : null;
+  if (m) return m[1];
+  // Vários 6 dígitos: usar o último (ex.: utilizador corrige a mensagem)
+  const sixes = [...t.matchAll(/\b(\d{6})\b/g)];
+  if (sixes.length) return sixes[sixes.length - 1][1];
+  const any = [...t.matchAll(/\b(\d{4,8})\b/g)];
+  return any.length ? any[any.length - 1][1] : null;
 }
 
 async function confirmOnCommunity({ code, whatsapp }) {
@@ -70,6 +80,33 @@ async function confirmOnCommunity({ code, whatsapp }) {
   return json;
 }
 
+function flushWhatsappBuffer(whatsappDigits) {
+  const buf = incomingBuffers.get(whatsappDigits);
+  if (!buf) return;
+  incomingBuffers.delete(whatsappDigits);
+  const combined = buf.parts.join('\n');
+  const code = extractCode(combined);
+  if (!code) return;
+  confirmOnCommunity({ code, whatsapp: whatsappDigits }).catch((err) => {
+    console.error('[wa-verify] confirm failed:', err?.message || err);
+  });
+}
+
+function bufferIncomingMessage(whatsappDigits, text) {
+  const trimmed = text && String(text).trim();
+  if (!trimmed) return false;
+
+  let buf = incomingBuffers.get(whatsappDigits);
+  if (!buf) {
+    buf = { parts: [], timer: null };
+    incomingBuffers.set(whatsappDigits, buf);
+  }
+  if (buf.timer) clearTimeout(buf.timer);
+  buf.parts.push(trimmed);
+  buf.timer = setTimeout(() => flushWhatsappBuffer(whatsappDigits), DEBOUNCE_MS);
+  return true;
+}
+
 app.get('/health', (_req, res) => {
   res.json({ ok: true, app: 'wa-verify', time: new Date().toISOString() });
 });
@@ -83,15 +120,14 @@ async function evolutionWebhookHandler(req, res) {
     }
 
     const text = extractTextFromEvolution(req.body);
-    const code = extractCode(text);
-    if (!code) return res.json({ ok: true, ignored: true });
-
     const remoteJid = extractRemoteJid(req.body);
     const whatsapp = normalizeWhatsappFromJid(remoteJid);
     if (!whatsapp) return res.json({ ok: true, ignored: true });
 
-    await confirmOnCommunity({ code, whatsapp });
-    return res.json({ ok: true });
+    const buffered = bufferIncomingMessage(whatsapp, text);
+    if (!buffered) return res.json({ ok: true, ignored: true });
+
+    return res.json({ ok: true, debounced: true, debounceMs: DEBOUNCE_MS });
   } catch (err) {
     return res.status(500).json({ ok: false, message: err?.message || 'Erro' });
   }
@@ -100,6 +136,5 @@ async function evolutionWebhookHandler(req, res) {
 app.post(/^\/webhook\/evolution(\/.*)?$/, evolutionWebhookHandler);
 
 app.listen(PORT, () => {
-  console.log(`[wa-verify] listening on :${PORT}`);
+  console.log(`[wa-verify] listening on :${PORT} (debounce ${DEBOUNCE_MS}ms)`);
 });
-

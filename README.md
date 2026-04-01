@@ -23,6 +23,7 @@ Projeto simples para **confirmar contas via WhatsApp** usando a **Evolution API*
 - `COMMUNITY_API_URL`: URL do backend da Comunidade (ex.: `https://api-comunidade...`)
 - `COMMUNITY_INTERNAL_SECRET`: segredo para autenticar chamadas internas
 - `WEBHOOK_SECRET`: segredo para validar chamadas do webhook (o header HTTP tem de ser **exactamente** este valor)
+- `WHATSAPP_INBOUND_DEBOUNCE_MS` (opcional): milissegundos para juntar mensagens do **mesmo número** antes de confirmar no backend (default **10000**). A cada nova mensagem com texto o temporizador **reinicia**; o texto acumulado é analisado e, se existir código de verificação em qualquer parte, corre o fluxo de ativação.
 
 ### Webhook, Nginx e header `x-webhook-secret`
 

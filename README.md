@@ -10,7 +10,7 @@ Projeto simples para **confirmar contas via WhatsApp** usando a **Evolution API*
 3. A Evolution API recebe a mensagem e envia um webhook `MESSAGES_UPSERT` para este serviço.
 4. Este serviço valida a mensagem, extrai o código e chama a API do backend da Comunidade para **confirmar a conta** e gravar o WhatsApp que enviou o código.
 
-### Componentes.
+### Componentes...
 
 - **Evolution API**: container `atendai/evolution-api`
 - **Webhook receiver**: `app/` (Node/Express)

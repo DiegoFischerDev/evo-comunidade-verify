@@ -71,8 +71,9 @@ app.get('/health', (_req, res) => {
   res.json({ ok: true, app: 'wa-verify', time: new Date().toISOString() });
 });
 
-// Webhook Evolution (configurar evento MESSAGES_UPSERT)
-app.post('/webhook/evolution', async (req, res) => {
+// Webhook Evolution: v2.3.x envia também paths com sufixo (ex.: /webhook/evolution/connection-update,
+// /webhook/evolution/messages-upsert). Aceitar base e qualquer subpath.
+async function evolutionWebhookHandler(req, res) {
   try {
     if (WEBHOOK_SECRET && req.get('x-webhook-secret') !== WEBHOOK_SECRET) {
       return res.status(403).json({ message: 'Forbidden' });
@@ -91,7 +92,9 @@ app.post('/webhook/evolution', async (req, res) => {
   } catch (err) {
     return res.status(500).json({ ok: false, message: err?.message || 'Erro' });
   }
-});
+}
+
+app.post(/^\/webhook\/evolution(\/.*)?$/, evolutionWebhookHandler);
 
 app.listen(PORT, () => {
   console.log(`[wa-verify] listening on :${PORT}`);

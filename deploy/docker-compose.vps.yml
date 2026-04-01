@@ -1,0 +1,38 @@
+# VPS (sem nginx no container). O nginx do host faz proxy para as portas locais.
+
+services:
+  evolution:
+    image: atendai/evolution-api:latest
+    restart: unless-stopped
+    environment:
+      AUTHENTICATION_API_KEY: ${EVOLUTION_API_KEY}
+      # Importante: ajuste conforme sua configuração/versão da Evolution
+      # Webhook para eventos de mensagem
+      WEBHOOK_GLOBAL_URL: ${WEBHOOK_PUBLIC_URL}
+      WEBHOOK_GLOBAL_ENABLED: "true"
+      WEBHOOK_EVENTS_MESSAGES_UPSERT: "true"
+      # instance default (pode criar pelo painel/endpoint também)
+      DEFAULT_INSTANCE: ${EVOLUTION_INSTANCE:-comunidade}
+    ports:
+      - "127.0.0.1:18080:8080"
+    volumes:
+      - evolution_store:/evolution/store
+      - evolution_instances:/evolution/instances
+
+  receiver:
+    build:
+      context: ../app
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      PORT: 3100
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET}
+      COMMUNITY_API_URL: ${COMMUNITY_API_URL}
+      COMMUNITY_INTERNAL_SECRET: ${COMMUNITY_INTERNAL_SECRET}
+    ports:
+      - "127.0.0.1:13100:3100"
+
+volumes:
+  evolution_store:
+  evolution_instances:
+

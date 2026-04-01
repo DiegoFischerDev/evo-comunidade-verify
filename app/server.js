@@ -13,37 +13,60 @@ const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || '';
 const COMMUNITY_API_URL = (process.env.COMMUNITY_API_URL || '').replace(/\/$/, '');
 const COMMUNITY_INTERNAL_SECRET = process.env.COMMUNITY_INTERNAL_SECRET || '';
 
+const LOG_WEBHOOK = process.env.LOG_WEBHOOK === '1' || process.env.LOG_WEBHOOK === 'true';
+
 /** Junta mensagens do mesmo número numa janela de silêncio antes de confirmar no backend */
 const DEBOUNCE_MS = Number(process.env.WHATSAPP_INBOUND_DEBOUNCE_MS || 10000);
 
 /** @type {Map<string, { parts: string[], timer: ReturnType<typeof setTimeout> | null }>} */
 const incomingBuffers = new Map();
 
-function extractTextFromEvolution(data) {
-  // Evolution costuma mandar payload com estrutura "data.message" (varia por versão)
-  const msg =
-    data?.data?.message ||
-    data?.message ||
-    data?.data?.messages?.[0]?.message ||
-    null;
-  if (!msg) return '';
-  if (typeof msg.conversation === 'string') return msg.conversation;
-  if (typeof msg.extendedTextMessage?.text === 'string') return msg.extendedTextMessage.text;
-  return '';
+/**
+ * Evolution 2.3.x: `messages.upsert` costuma vir como
+ * `{ event, instance, data: { key, message } }` ou `data: { messages: [...] } }`.
+ */
+function listIncomingMessageParts(body) {
+  /** @type {{ remoteJid: string, fromMe?: boolean, text: string }[]} */
+  const parts = [];
+  const d = body?.data;
+  if (!d || typeof d !== 'object') return parts;
+
+  const push = (key, message) => {
+    if (!key?.remoteJid) return;
+    const jid = String(key.remoteJid);
+    if (jid.includes('@g.us')) return;
+    if (jid.endsWith('@lid')) return;
+    if (key.fromMe === true) return;
+    const text = textFromBaileysMessage(message);
+    parts.push({ remoteJid: jid, fromMe: key.fromMe, text });
+  };
+
+  if (d.key && d.message) {
+    push(d.key, d.message);
+  }
+
+  let raw = d.messages;
+  const list = Array.isArray(raw) ? raw : raw && typeof raw === 'object' ? [raw] : [];
+  for (const item of list) {
+    if (item?.key && item?.message) push(item.key, item.message);
+  }
+
+  return parts;
 }
 
-function extractRemoteJid(data) {
-  return (
-    data?.data?.key?.remoteJid ||
-    data?.data?.messages?.[0]?.key?.remoteJid ||
-    data?.key?.remoteJid ||
-    null
-  );
+function textFromBaileysMessage(msg) {
+  if (!msg || typeof msg !== 'object') return '';
+  if (typeof msg.conversation === 'string') return msg.conversation;
+  if (typeof msg.extendedTextMessage?.text === 'string') return msg.extendedTextMessage.text;
+  if (typeof msg.imageMessage?.caption === 'string') return msg.imageMessage.caption;
+  if (typeof msg.videoMessage?.caption === 'string') return msg.videoMessage.caption;
+  const nested = msg.ephemeralMessage?.message || msg.viewOnceMessage?.message;
+  if (nested) return textFromBaileysMessage(nested);
+  return '';
 }
 
 function normalizeWhatsappFromJid(remoteJid) {
   if (!remoteJid) return null;
-  // ex.: "351927398547@s.whatsapp.net" -> "351927398547"
   return String(remoteJid).split('@')[0].replace(/\D/g, '') || null;
 }
 
@@ -55,7 +78,6 @@ function extractCode(text) {
   if (m) return m[1];
   m = t.match(/codigo\s*:?\s*(\d{4,8})/i);
   if (m) return m[1];
-  // Vários 6 dígitos: usar o último (ex.: utilizador corrige a mensagem)
   const sixes = [...t.matchAll(/\b(\d{6})\b/g)];
   if (sixes.length) return sixes[sixes.length - 1][1];
   const any = [...t.matchAll(/\b(\d{4,8})\b/g)];
@@ -74,8 +96,11 @@ async function confirmOnCommunity({ code, whatsapp }) {
   });
   const json = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const msg = json?.message || json?.error || `Erro ${res.status}`;
-    throw new Error(msg);
+    const msg =
+      (Array.isArray(json?.message) ? json.message.join(' ') : json?.message) ||
+      json?.error ||
+      `Erro ${res.status}`;
+    throw new Error(String(msg));
   }
   return json;
 }
@@ -86,10 +111,17 @@ function flushWhatsappBuffer(whatsappDigits) {
   incomingBuffers.delete(whatsappDigits);
   const combined = buf.parts.join('\n');
   const code = extractCode(combined);
-  if (!code) return;
-  confirmOnCommunity({ code, whatsapp: whatsappDigits }).catch((err) => {
-    console.error('[wa-verify] confirm failed:', err?.message || err);
-  });
+  if (!code) {
+    console.warn('[wa-verify] flush: sem código no texto acumulado', {
+      len: combined.length,
+      preview: combined.slice(0, 120),
+    });
+    return;
+  }
+  console.log('[wa-verify] flush: a confirmar', { whatsapp: whatsappDigits, code });
+  confirmOnCommunity({ code, whatsapp: whatsappDigits })
+    .then(() => console.log('[wa-verify] conta confirmada no backend', { whatsapp: whatsappDigits }))
+    .catch((err) => console.error('[wa-verify] confirm failed:', err?.message || err));
 }
 
 function bufferIncomingMessage(whatsappDigits, text) {
@@ -104,6 +136,12 @@ function bufferIncomingMessage(whatsappDigits, text) {
   if (buf.timer) clearTimeout(buf.timer);
   buf.parts.push(trimmed);
   buf.timer = setTimeout(() => flushWhatsappBuffer(whatsappDigits), DEBOUNCE_MS);
+  console.log('[wa-verify] buffer', {
+    whatsapp: whatsappDigits,
+    parts: buf.parts.length,
+    debounceMs: DEBOUNCE_MS,
+    preview: trimmed.slice(0, 80),
+  });
   return true;
 }
 
@@ -111,22 +149,29 @@ app.get('/health', (_req, res) => {
   res.json({ ok: true, app: 'wa-verify', time: new Date().toISOString() });
 });
 
-// Webhook Evolution: v2.3.x envia também paths com sufixo (ex.: /webhook/evolution/connection-update,
-// /webhook/evolution/messages-upsert). Aceitar base e qualquer subpath.
 async function evolutionWebhookHandler(req, res) {
   try {
     if (WEBHOOK_SECRET && req.get('x-webhook-secret') !== WEBHOOK_SECRET) {
       return res.status(403).json({ message: 'Forbidden' });
     }
 
-    const text = extractTextFromEvolution(req.body);
-    const remoteJid = extractRemoteJid(req.body);
-    const whatsapp = normalizeWhatsappFromJid(remoteJid);
-    if (!whatsapp) return res.json({ ok: true, ignored: true });
+    if (LOG_WEBHOOK) {
+      console.log('[wa-verify] webhook raw event=', req.body?.event, 'keys=', req.body?.data ? Object.keys(req.body.data) : []);
+    }
 
-    const buffered = bufferIncomingMessage(whatsapp, text);
-    if (!buffered) return res.json({ ok: true, ignored: true });
+    const parts = listIncomingMessageParts(req.body);
+    let anyBuffered = false;
+    for (const { remoteJid, text } of parts) {
+      const whatsapp = normalizeWhatsappFromJid(remoteJid);
+      if (!whatsapp) continue;
+      const trimmed = text && String(text).trim();
+      if (!trimmed) continue;
+      if (bufferIncomingMessage(whatsapp, trimmed)) anyBuffered = true;
+    }
 
+    if (!anyBuffered) {
+      return res.json({ ok: true, ignored: true });
+    }
     return res.json({ ok: true, debounced: true, debounceMs: DEBOUNCE_MS });
   } catch (err) {
     return res.status(500).json({ ok: false, message: err?.message || 'Erro' });

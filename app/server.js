@@ -13,6 +13,11 @@ const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || '';
 const COMMUNITY_API_URL = (process.env.COMMUNITY_API_URL || '').replace(/\/$/, '');
 const COMMUNITY_INTERNAL_SECRET = process.env.COMMUNITY_INTERNAL_SECRET || '';
 
+// Envio de mensagens via Evolution (resposta automática de teste)
+const EVOLUTION_API_URL = (process.env.EVOLUTION_API_URL || '').replace(/\/$/, '');
+const EVOLUTION_API_KEY = process.env.EVOLUTION_API_KEY || '';
+const EVOLUTION_INSTANCE = process.env.EVOLUTION_INSTANCE || 'comunidade';
+
 const LOG_WEBHOOK = process.env.LOG_WEBHOOK === '1' || process.env.LOG_WEBHOOK === 'true';
 
 /** Junta mensagens do mesmo número numa janela de silêncio antes de confirmar no backend */
@@ -105,6 +110,29 @@ async function confirmOnCommunity({ code, whatsapp }) {
   return json;
 }
 
+async function sendEvolutionText(toDigits, text) {
+  const base = EVOLUTION_API_URL.replace(/\/$/, '');
+  const key = EVOLUTION_API_KEY;
+  const instance = EVOLUTION_INSTANCE || 'comunidade';
+  if (!base || !key) {
+    console.warn(
+      '[wa-verify] EVOLUTION_API_URL ou EVOLUTION_API_KEY ausentes; resposta automática não enviada.',
+    );
+    return;
+  }
+  const number = String(toDigits || '').replace(/\D/g, '');
+  if (!number) return;
+  const res = await fetch(`${base}/message/sendText/${instance}`, {
+    method: 'POST',
+    headers: { apikey: key, 'content-type': 'application/json' },
+    body: JSON.stringify({ number, text }),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    console.warn('[wa-verify] Evolution sendText falhou:', res.status, body);
+  }
+}
+
 function flushWhatsappBuffer(whatsappDigits) {
   const buf = incomingBuffers.get(whatsappDigits);
   if (!buf) return;
@@ -166,6 +194,15 @@ async function evolutionWebhookHandler(req, res) {
       if (!whatsapp) continue;
       const trimmed = text && String(text).trim();
       if (!trimmed) continue;
+
+      // Resposta automática simples para teste do fluxo Evolution
+      sendEvolutionText(whatsapp, 'Bom dia tudo bem?').catch((err) => {
+        console.warn(
+          '[wa-verify] erro ao enviar resposta automática:',
+          err?.message || err,
+        );
+      });
+
       if (bufferIncomingMessage(whatsapp, trimmed)) anyBuffered = true;
     }
 

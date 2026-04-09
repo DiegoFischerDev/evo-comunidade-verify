@@ -137,17 +137,23 @@ function normalizeWhatsappFromJid(remoteJid) {
 }
 
 function extractCode(text) {
-  const t = String(text || '')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '');
-  let m = t.match(/(?:meu\s+)?codigo\s*(?:é|e|=|:)?\s*(\d{4,8})/i);
-  if (m) return m[1];
-  m = t.match(/codigo\s*:?\s*(\d{4,8})/i);
-  if (m) return m[1];
-  const sixes = [...t.matchAll(/\b(\d{6})\b/g)];
-  if (sixes.length) return sixes[sixes.length - 1][1];
-  const any = [...t.matchAll(/\b(\d{4,8})\b/g)];
-  return any.length ? any[any.length - 1][1] : null;
+  const raw = String(text || '');
+  const t = raw.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  const normalized = t.toLowerCase();
+
+  // Regra 1: se tiver "codigo" em qualquer lugar + tiver número(s) de 6 dígitos, extrai o último
+  if (normalized.includes('codigo')) {
+    const sixes = [...t.matchAll(/\b(\d{6})\b/g)];
+    return sixes.length ? sixes[sixes.length - 1][1] : null;
+  }
+
+  // Regra 2: se a mensagem for APENAS número (sem mais texto) com 6 dígitos, extrai
+  const onlyDigits = raw.trim().replace(/\s+/g, '');
+  if (/^\d{6}$/.test(onlyDigits)) {
+    return onlyDigits;
+  }
+
+  return null;
 }
 
 async function confirmOnCommunity({ code, whatsapp }) {

@@ -26,34 +26,95 @@ const DEBOUNCE_MS = Number(process.env.WHATSAPP_INBOUND_DEBOUNCE_MS || 10000);
 /** @type {Map<string, { parts: string[], timer: ReturnType<typeof setTimeout> | null }>} */
 const incomingBuffers = new Map();
 
+/** Evita disparar o mesmo flow várias vezes (por número) */
+const CREDIT_HELP_COOLDOWN_MS = Number(process.env.CREDIT_HELP_COOLDOWN_MS || 10 * 60 * 1000);
+/** @type {Map<string, number>} */
+const creditHelpLastTriggeredAt = new Map();
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function normalizeText(text) {
+  return String(text || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+const CREDIT_HELP_TRIGGER = normalizeText('Ola, preciso de ajuda em relação ao contato da gestora de crédito');
+
+async function sendCreditHelpFlow({ whatsappDigits, contactName }) {
+  const now = Date.now();
+  const last = creditHelpLastTriggeredAt.get(whatsappDigits) || 0;
+  if (now - last < CREDIT_HELP_COOLDOWN_MS) {
+    console.log('[wa-verify] credit-help: cooldown', { whatsapp: whatsappDigits });
+    return { ok: true, skipped: 'cooldown' };
+  }
+  creditHelpLastTriggeredAt.set(whatsappDigits, now);
+
+  const safeName = String(contactName || '').trim();
+  const hello = safeName ? `oi ${safeName} tudo bem?` : 'oi, tudo bem?';
+
+  const messages = [
+    hello,
+    'Você tem dúvidas ou já quer mesmo iniciar sua análise gratuita com a gestora?',
+    'Vou te falar basicamente como funciona o processo de credito habitação',
+    'Voce entra em contato com a gestora ou gestor, ele vai recolher os documentos necessarios e vai levar para todos os bancos, nao apenas para o banco que voce ja tem conta. Ele vai ver quais bancos aprovam o financiamento nas condiçoes que voce precisa e quais oferecem melhores taxas. uma vez aprovado, o banco vai dizer o maximo de valor que ele libera pra voce... 100 mil ou 150 mil ou 200 mil.. enfim, sabendo esse valor maximo, voce começa a busca pelas casas dentro desse valor. Esse serviço da gestora é gratuito, quem paga a comissao dela sao os bancos.',
+    'Geralmente os bancos pedem 10% de entrada e financiam 90% do valor do imovel',
+    'Te indico ver esses videos onde falamos um pouco sobre como foi o nosso processo e outro que tiramos duvidas com a gestora:',
+    'https://www.youtube.com/watch?v=nSuXTX0z9Vk',
+    'https://www.youtube.com/watch?v=v04RVqeT9aQ',
+    'Pra iniciar sua análise você deixa seu contato nesse link e vai receber o contato da gestora por e-mail e a lista de documentos:',
+    'https://www.ia.rafaapelomundo.com/credito',
+    'E qualquer duvida eu fico a disposição 😃',
+  ];
+
+  console.log('[wa-verify] credit-help: sending flow', {
+    whatsapp: whatsappDigits,
+    name: safeName || null,
+    count: messages.length,
+  });
+
+  for (const text of messages) {
+    await sendEvolutionText(whatsappDigits, text);
+    // pequeno intervalo para preservar a ordem no WhatsApp
+    await sleep(1200);
+  }
+
+  return { ok: true, sent: messages.length };
+}
+
 /**
  * Evolution 2.3.x: `messages.upsert` costuma vir como
  * `{ event, instance, data: { key, message } }` ou `data: { messages: [...] } }`.
  */
 function listIncomingMessageParts(body) {
-  /** @type {{ remoteJid: string, fromMe?: boolean, text: string }[]} */
+  /** @type {{ remoteJid: string, fromMe?: boolean, text: string, pushName?: string }[]} */
   const parts = [];
   const d = body?.data;
   if (!d || typeof d !== 'object') return parts;
 
-  const push = (key, message) => {
+  const push = (key, message, pushName) => {
     if (!key?.remoteJid) return;
     const jid = String(key.remoteJid);
     if (jid.includes('@g.us')) return;
     if (jid.endsWith('@lid')) return;
     if (key.fromMe === true) return;
     const text = textFromBaileysMessage(message);
-    parts.push({ remoteJid: jid, fromMe: key.fromMe, text });
+    parts.push({ remoteJid: jid, fromMe: key.fromMe, text, pushName });
   };
 
   if (d.key && d.message) {
-    push(d.key, d.message);
+    push(d.key, d.message, d.pushName);
   }
 
   let raw = d.messages;
   const list = Array.isArray(raw) ? raw : raw && typeof raw === 'object' ? [raw] : [];
   for (const item of list) {
-    if (item?.key && item?.message) push(item.key, item.message);
+    if (item?.key && item?.message) push(item.key, item.message, item.pushName || d.pushName);
   }
 
   return parts;
@@ -202,11 +263,22 @@ async function evolutionWebhookHandler(req, res) {
 
     const parts = listIncomingMessageParts(req.body);
     let anyBuffered = false;
-    for (const { remoteJid, text } of parts) {
+    for (const { remoteJid, text, pushName } of parts) {
       const whatsapp = normalizeWhatsappFromJid(remoteJid);
       if (!whatsapp) continue;
       const trimmed = text && String(text).trim();
       if (!trimmed) continue;
+
+      // Flow: ajuda com gestora de crédito (independente de autenticação/código)
+      if (normalizeText(trimmed) === CREDIT_HELP_TRIGGER) {
+        sendCreditHelpFlow({ whatsappDigits: whatsapp, contactName: pushName }).catch((err) => {
+          console.warn('[wa-verify] credit-help: erro ao enviar flow:', err?.message || err);
+        });
+        // não bufferiza esta mensagem (evita misturar com confirmação por código)
+        anyBuffered = true;
+        continue;
+      }
+
       if (bufferIncomingMessage(whatsapp, trimmed)) anyBuffered = true;
     }
 

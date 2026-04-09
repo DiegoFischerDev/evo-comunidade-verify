@@ -205,19 +205,6 @@ function flushWhatsappBuffer(whatsappDigits) {
       len: combined.length,
       preview: combined.slice(0, 120),
     });
-    // Responde apenas se em algum trecho o utilizador disser \"bom dia\"
-    const normalized = combined
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .toLowerCase();
-    if (normalized.includes('bom dia')) {
-      sendEvolutionText(whatsappDigits, 'Bom dia, tudo bem?').catch((err) => {
-        console.warn(
-          '[wa-verify] erro ao enviar resposta automática (sem código):',
-          err?.message || err,
-        );
-      });
-    }
     return;
   }
   console.log('[wa-verify] flush: a confirmar', { whatsapp: whatsappDigits, code });

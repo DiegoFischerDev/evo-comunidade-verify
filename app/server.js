@@ -59,7 +59,7 @@ const CREATE_ACCOUNT_TRIGGER = normalizeText('criar conta');
  * @returns {Promise<{ ok: true, id: number, upload_url: string, lead?: unknown }>}
  */
 async function createIaAppLead(whatsappDigits, nome) {
-  const base = (process.env.IA_APP_BASE_URL || 'https://ia.rafaapelomundo.com').replace(/\/$/, '');
+  const base = (process.env.IA_APP_BASE_URL || 'https://ia.rafaapelomundo.com/').replace(/\/$/, '');
   const secret = process.env.IA_APP_INTEGRATION_SECRET || '';
   if (!secret) {
     throw new Error('Integração não configurada no servidor.');

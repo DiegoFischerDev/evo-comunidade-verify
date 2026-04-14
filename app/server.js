@@ -68,6 +68,11 @@ const QUIZ_STATE_TTL_MS = 24 * 60 * 60 * 1000;
 /** @type {Map<string, CreditQuizState>} */
 const creditQuizStates = new Map();
 
+/** Evolution costuma enviar 2 pedidos HTTP em paralelo para o mesmo evento — evita abertura/respostas duplicadas. */
+const financingStartExclusive = new Set();
+const financingQuizReplyExclusive = new Set();
+const createAccountExclusive = new Set();
+
 function getCreditQuizState(whatsappDigits) {
   const s = creditQuizStates.get(whatsappDigits);
   if (!s) return null;
@@ -103,9 +108,10 @@ function parseMaritalStatus(text) {
   return null;
 }
 
+/** SIM/NAO: `normalizeText` remove acentos (ex.: não→nao, sim→sim). Só uma palavra; pontuação à volta é ignorada. */
 function parseSimNao(text) {
-  const n = normalizeText(text);
-  const words = n.split(/\s+/).filter(Boolean);
+  const raw = normalizeText(text).replace(/^[^a-z]+|[^a-z]+$/g, '');
+  const words = raw.split(/\s+/).filter(Boolean);
   if (words.length === 0) return null;
   if (words.length === 1) {
     if (words[0] === 'sim') return 'SIM';
@@ -242,92 +248,102 @@ async function tryHandleFinancingQuiz(whatsappDigits, trimmed, pushName) {
   const state = getCreditQuizState(whatsappDigits);
   if (!state) return false;
 
-  if (state.step === 'AWAIT_MARITAL') {
-    const marital = parseMaritalStatus(trimmed);
-    if (!marital) {
+  if (financingQuizReplyExclusive.has(whatsappDigits)) {
+    console.log('[wa-verify] financing-quiz: ignorado (processamento em curso)', { whatsapp: whatsappDigits });
+    return true;
+  }
+  financingQuizReplyExclusive.add(whatsappDigits);
+
+  try {
+    if (state.step === 'AWAIT_MARITAL') {
+      const marital = parseMaritalStatus(trimmed);
+      if (!marital) {
+        await sendEvolutionText(
+          whatsappDigits,
+          'Nao entendi. Por favor responda com uma destas opções: CASADO, CASADA, SOLTEIRO ou SOLTEIRA.',
+        );
+        await sleep(800);
+        await sendEvolutionText(whatsappDigits, '1- Voce é CASADO ou SOLTEIRO?');
+        setCreditQuizState(whatsappDigits, state);
+        return true;
+      }
+      state.mode = marital;
+      state.step = 'AWAIT_Q2';
+      if (pushName && String(pushName).trim()) state.fullPushName = String(pushName).trim();
+      setCreditQuizState(whatsappDigits, state);
+      await sendEvolutionText(whatsappDigits, financingQuestion(state.mode, 2));
+      return true;
+    }
+
+    const stepToNum = { AWAIT_Q2: 2, AWAIT_Q3: 3, AWAIT_Q4: 4, AWAIT_Q5: 5 };
+    const stepKey = state.step;
+    if (!(stepKey in stepToNum)) return false;
+    const num = stepToNum[/** @type {'AWAIT_Q2'|'AWAIT_Q3'|'AWAIT_Q4'|'AWAIT_Q5'} */ (stepKey)];
+    const ans = parseSimNao(trimmed);
+    if (!ans) {
       await sendEvolutionText(
         whatsappDigits,
-        'Nao entendi. Por favor responda com uma destas opções: CASADO, CASADA, SOLTEIRO ou SOLTEIRA.',
+        'Nao entendi. Por favor responda apenas com SIM ou NAO.',
       );
       await sleep(800);
-      await sendEvolutionText(whatsappDigits, '1- Voce é CASADO ou SOLTEIRO?');
+      await sendEvolutionText(
+        whatsappDigits,
+        financingQuestion(/** @type {'casado'|'solteiro'} */ (state.mode), num),
+      );
       setCreditQuizState(whatsappDigits, state);
       return true;
     }
-    state.mode = marital;
-    state.step = 'AWAIT_Q2';
-    if (pushName && String(pushName).trim()) state.fullPushName = String(pushName).trim();
-    setCreditQuizState(whatsappDigits, state);
-    await sendEvolutionText(whatsappDigits, financingQuestion(state.mode, 2));
-    return true;
-  }
 
-  const stepToNum = { AWAIT_Q2: 2, AWAIT_Q3: 3, AWAIT_Q4: 4, AWAIT_Q5: 5 };
-  const stepKey = state.step;
-  if (!(stepKey in stepToNum)) return false;
-  const num = stepToNum[/** @type {'AWAIT_Q2'|'AWAIT_Q3'|'AWAIT_Q4'|'AWAIT_Q5'} */ (stepKey)];
-  const ans = parseSimNao(trimmed);
-  if (!ans) {
-    await sendEvolutionText(
-      whatsappDigits,
-      'Nao entendi. Por favor responda apenas com SIM ou NAO.',
-    );
-    await sleep(800);
-    await sendEvolutionText(
-      whatsappDigits,
-      financingQuestion(/** @type {'casado'|'solteiro'} */ (state.mode), num),
-    );
-    setCreditQuizState(whatsappDigits, state);
-    return true;
-  }
+    if (num === 2) state.answers.q2 = ans;
+    else if (num === 3) state.answers.q3 = ans;
+    else if (num === 4) state.answers.q4 = ans;
+    else state.answers.q5 = ans;
 
-  if (num === 2) state.answers.q2 = ans;
-  else if (num === 3) state.answers.q3 = ans;
-  else if (num === 4) state.answers.q4 = ans;
-  else state.answers.q5 = ans;
+    if (num < 5) {
+      const next = /** @type {'AWAIT_Q2'|'AWAIT_Q3'|'AWAIT_Q4'|'AWAIT_Q5'} */ (
+        num === 2 ? 'AWAIT_Q3' : num === 3 ? 'AWAIT_Q4' : 'AWAIT_Q5'
+      );
+      state.step = next;
+      setCreditQuizState(whatsappDigits, state);
+      await sendEvolutionText(whatsappDigits, financingQuestion(state.mode, num + 1));
+      return true;
+    }
 
-  if (num < 5) {
-    const next = /** @type {'AWAIT_Q2'|'AWAIT_Q3'|'AWAIT_Q4'|'AWAIT_Q5'} */ (
-      num === 2 ? 'AWAIT_Q3' : num === 3 ? 'AWAIT_Q4' : 'AWAIT_Q5'
-    );
-    state.step = next;
-    setCreditQuizState(whatsappDigits, state);
-    await sendEvolutionText(whatsappDigits, financingQuestion(state.mode, num + 1));
-    return true;
-  }
+    const { q2, q3, q4, q5 } = state.answers;
+    if (!q2 || !q3 || !q4 || !state.answers.q5) {
+      clearCreditQuizState(whatsappDigits);
+      return true;
+    }
+    const outcome = classifyFinancingAnswers(q2, q3, q4, state.answers.q5);
+    await sendEvolutionText(whatsappDigits, outcome.body);
+    await sleep(1200);
 
-  const { q2, q3, q4, q5 } = state.answers;
-  if (!q2 || !q3 || !q4 || !state.answers.q5) {
+    const nomeLead = state.fullPushName || state.displayFirstName || 'Cliente WhatsApp';
+    try {
+      const data = await createIaAppLead(whatsappDigits, nomeLead, {
+        comentario: outcome.comment,
+      });
+      for (let i = 0; i < FINANCING_FOLLOWUP_MESSAGES.length; i++) {
+        const line = FINANCING_FOLLOWUP_MESSAGES[i];
+        if (line === null) {
+          await sendEvolutionText(whatsappDigits, String(data.upload_url));
+        } else {
+          await sendEvolutionText(whatsappDigits, line);
+        }
+        await sleep(1200);
+      }
+    } catch (err) {
+      const detail = err?.message || String(err);
+      console.warn('[wa-verify] financing-quiz: lead falhou', { whatsapp: whatsappDigits, detail });
+      await sendEvolutionText(whatsappDigits, 'Erro ao registar o teu contacto. Tenta mais tarde ou escreve criar conta.');
+      await sleep(800);
+      await sendEvolutionText(whatsappDigits, detail);
+    }
     clearCreditQuizState(whatsappDigits);
     return true;
+  } finally {
+    financingQuizReplyExclusive.delete(whatsappDigits);
   }
-  const outcome = classifyFinancingAnswers(q2, q3, q4, state.answers.q5);
-  await sendEvolutionText(whatsappDigits, outcome.body);
-  await sleep(1200);
-
-  const nomeLead = state.fullPushName || state.displayFirstName || 'Cliente WhatsApp';
-  try {
-    const data = await createIaAppLead(whatsappDigits, nomeLead, {
-      comentario: outcome.comment,
-    });
-    for (let i = 0; i < FINANCING_FOLLOWUP_MESSAGES.length; i++) {
-      const line = FINANCING_FOLLOWUP_MESSAGES[i];
-      if (line === null) {
-        await sendEvolutionText(whatsappDigits, String(data.upload_url));
-      } else {
-        await sendEvolutionText(whatsappDigits, line);
-      }
-      await sleep(1200);
-    }
-  } catch (err) {
-    const detail = err?.message || String(err);
-    console.warn('[wa-verify] financing-quiz: lead falhou', { whatsapp: whatsappDigits, detail });
-    await sendEvolutionText(whatsappDigits, 'Erro ao registar o teu contacto. Tenta mais tarde ou escreve criar conta.');
-    await sleep(800);
-    await sendEvolutionText(whatsappDigits, detail);
-  }
-  clearCreditQuizState(whatsappDigits);
-  return true;
 }
 
 /**
@@ -514,6 +530,24 @@ function dedupeMessageParts(parts) {
   return [...byKey.values()];
 }
 
+/**
+ * Última linha de defesa no mesmo pedido HTTP: mesmo JID (dígitos) + mesmo texto.
+ * @param {{ remoteJid: string, fromMe?: boolean, text: string, pushName?: string, msgId?: string }[]} parts
+ */
+function dedupeWebhookPartsForLoop(parts) {
+  const seen = new Set();
+  const out = [];
+  for (const p of parts) {
+    const wa = normalizeWhatsappFromJid(p.remoteJid);
+    if (!wa) continue;
+    const key = `${wa}|${normalizeText(p.text)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(p);
+  }
+  return out;
+}
+
 function textFromBaileysMessage(msg) {
   if (!msg || typeof msg !== 'object') return '';
   if (typeof msg.conversation === 'string') return msg.conversation;
@@ -648,7 +682,7 @@ async function evolutionWebhookHandler(req, res) {
       console.log('[wa-verify] webhook raw event=', req.body?.event, 'keys=', req.body?.data ? Object.keys(req.body.data) : []);
     }
 
-    const parts = listIncomingMessageParts(req.body);
+    const parts = dedupeWebhookPartsForLoop(listIncomingMessageParts(req.body));
     let anyBuffered = false;
     for (const { remoteJid, text, pushName } of parts) {
       const whatsapp = normalizeWhatsappFromJid(remoteJid);
@@ -658,10 +692,20 @@ async function evolutionWebhookHandler(req, res) {
 
       // Gatilhos globais (reiniciam / cancelam quiz de financiamento em curso)
       if (normalizeText(trimmed) === FINANCING_QUIZ_TRIGGER) {
-        clearCreditQuizState(whatsapp);
-        startFinancingQuiz(whatsapp, pushName || '').catch((err) => {
+        if (financingStartExclusive.has(whatsapp)) {
+          console.log('[wa-verify] financing-quiz: abertura duplicada ignorada', { whatsapp });
+          anyBuffered = true;
+          continue;
+        }
+        financingStartExclusive.add(whatsapp);
+        try {
+          clearCreditQuizState(whatsapp);
+          await startFinancingQuiz(whatsapp, pushName || '');
+        } catch (err) {
           console.warn('[wa-verify] financing-quiz: erro ao iniciar', err?.message || err);
-        });
+        } finally {
+          financingStartExclusive.delete(whatsapp);
+        }
         anyBuffered = true;
         continue;
       }
@@ -677,9 +721,16 @@ async function evolutionWebhookHandler(req, res) {
 
       if (normalizeText(trimmed) === CREATE_ACCOUNT_TRIGGER) {
         clearCreditQuizState(whatsapp);
-        sendCreateAccountFlow({ whatsappDigits: whatsapp, contactName: pushName }).catch((err) => {
-          console.warn('[wa-verify] create-account: exceção:', err?.message || err);
-        });
+        if (createAccountExclusive.has(whatsapp)) {
+          anyBuffered = true;
+          continue;
+        }
+        createAccountExclusive.add(whatsapp);
+        sendCreateAccountFlow({ whatsappDigits: whatsapp, contactName: pushName })
+          .catch((err) => {
+            console.warn('[wa-verify] create-account: exceção:', err?.message || err);
+          })
+          .finally(() => createAccountExclusive.delete(whatsapp));
         anyBuffered = true;
         continue;
       }

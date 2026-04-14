@@ -481,22 +481,37 @@ function listIncomingMessageParts(body) {
 }
 
 /**
+ * Mesma mensagem costuma vir em `data.key` e outra vez em `data.messages` — por vezes só uma das
+ * entradas traz `key.id`. Chave estável: JID + texto normalizado (quando há texto).
  * @param {{ remoteJid: string, fromMe?: boolean, text: string, pushName?: string, msgId?: string }[]} parts
  */
 function dedupeMessageParts(parts) {
-  const seen = new Set();
-  const out = [];
+  /** @type {Map<string, { remoteJid: string, fromMe?: boolean, text: string, pushName?: string, msgId?: string }>} */
+  const byKey = new Map();
   for (const p of parts) {
     const jid = p.remoteJid;
     const textNorm = normalizeText(p.text);
-    const key =
-      p.msgId && p.msgId.length > 0 ? `id:${p.msgId}` : textNorm.length > 0 ? `txt:${textNorm}` : 'empty';
-    const dedupeKey = `${jid}|${key}`;
-    if (seen.has(dedupeKey)) continue;
-    seen.add(dedupeKey);
-    out.push(p);
+    let dedupeKey;
+    if (textNorm.length > 0) {
+      dedupeKey = `${jid}|t:${textNorm}`;
+    } else if (p.msgId && String(p.msgId).length > 0) {
+      dedupeKey = `${jid}|id:${p.msgId}`;
+    } else {
+      continue;
+    }
+    const prev = byKey.get(dedupeKey);
+    if (!prev) {
+      byKey.set(dedupeKey, p);
+      continue;
+    }
+    byKey.set(dedupeKey, {
+      ...prev,
+      msgId: prev.msgId || p.msgId,
+      pushName:
+        (prev.pushName && prev.pushName.length >= (p.pushName || '').length) ? prev.pushName : p.pushName,
+    });
   }
-  return out;
+  return [...byKey.values()];
 }
 
 function textFromBaileysMessage(msg) {

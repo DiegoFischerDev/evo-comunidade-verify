@@ -44,21 +44,33 @@ function normalizeText(text) {
     .toLowerCase();
 }
 
+/** Links / pré-visualizações podem enviar o texto em percent-encoding (ex.: Ol%C3%A1%2C%20quero...). */
+function maybeUrlDecodeInboundText(text) {
+  const t = String(text || '').trim();
+  if (!t.includes('%')) return t;
+  try {
+    return decodeURIComponent(t.replace(/\+/g, ' '));
+  } catch {
+    return t;
+  }
+}
+
 const CREDIT_HELP_TRIGGER = normalizeText('Ola, preciso de ajuda em relação ao contato da gestora de crédito');
 
 const CREATE_ACCOUNT_TRIGGER = normalizeText('criar conta');
 
-const FINANCING_QUIZ_TRIGGER = normalizeText(
-  'Ola, quero saber se consigo financiar uma casa em Portugal',
-);
+const FINANCING_QUIZ_TRIGGERS = new Set([
+  normalizeText('Ola, quero saber se consigo financiar uma casa em Portugal'),
+  normalizeText('Oi, quero saber se consigo financiar uma casa em Portugal'),
+]);
 
 const QUIZ_STATE_TTL_MS = 24 * 60 * 60 * 1000;
 
 /**
  * @typedef {{
- *   step: 'AWAIT_MARITAL' | 'AWAIT_Q2' | 'AWAIT_Q3' | 'AWAIT_Q4' | 'AWAIT_Q5' | 'AWAIT_TAIL_AFTER_DOCS',
+ *   step: 'AWAIT_MARITAL' | 'AWAIT_Q2' | 'AWAIT_Q3' | 'AWAIT_Q7' | 'AWAIT_Q4' | 'AWAIT_Q5',
  *   mode: 'casado' | 'solteiro' | null,
- *   answers: { q2?: 'SIM' | 'NAO'; q3?: 'SIM' | 'NAO'; q4?: 'SIM' | 'NAO'; q5?: 'SIM' | 'NAO' },
+ *   answers: { q2?: 'SIM' | 'NAO'; q3?: 'SIM' | 'NAO'; q7?: 'SIM' | 'NAO'; q4?: 'SIM' | 'NAO'; q5?: 'SIM' | 'NAO' },
  *   displayFirstName: string,
  *   fullPushName: string,
  *   updatedAt: number,
@@ -154,19 +166,27 @@ function parseSimNao(text) {
 function financingQuestion(mode, n) {
   if (mode === 'casado') {
     if (n === 2)
-      return '2- Pelo menos Um dos dois ja possui cartão cidadão ou título de residência no formato de cartão?\nSIM ou NAO';
+      return '2- Pelo menos um dos dois já possui cartão de cidadão ou título de residência no formato de cartão?\nSIM ou NÃO';
     if (n === 3)
-      return '3- Pelo menos Um dos dois possui contrato de trabalho efetivo?\nSIM ou NAO';
+      return '3- Pelo menos um dos dois possui contrato de trabalho efetivo?\nSIM ou NÃO';
     if (n === 4)
-      return '4- Pelo menos Um dos dois possui declaração de Imposto de renda do ano anterior?\nSIM ou NAO';
-    return '5- Ambos tem menos de 35 anos?\nSIM ou NAO';
+      return '4- Pelo menos um dos dois possui declaração de imposto de renda do ano anterior?\nSIM ou NÃO';
+    return '5- Ambos têm menos de 35 anos?\nSIM ou NÃO';
   }
   if (n === 2)
-    return '2- Voce possui cartão cidadão ou título de residência no formato de cartão?\nSIM ou NAO';
-  if (n === 3) return '3- Você possui contrato de trabalho efetivo?\nSIM ou NAO';
+    return '2- Você possui cartão de cidadão ou título de residência no formato de cartão?\nSIM ou NÃO';
+  if (n === 3) return '3- Você possui contrato de trabalho efetivo?\nSIM ou NÃO';
   if (n === 4)
-    return '4- Você possui declaração de imposto de renda do ano anterior?\nSIM ou NAO';
-  return '5- Tem menos de 35 anos?\nSIM ou NAO';
+    return '4- Você possui declaração de imposto de renda do ano anterior?\nSIM ou NÃO';
+  return '5- Tem menos de 35 anos?\nSIM ou NÃO';
+}
+
+/** Pergunta extra quando a resposta à 3 é NÃO (sem contrato de trabalho efetivo). */
+function financingQuestionSeven(mode) {
+  if (mode === 'casado') {
+    return '7- Por não haver contrato de trabalho efetivo, o caso torna-se um pouco mais complexo. Teriam 10% em capitais próprios para dar de entrada?\nSIM ou NÃO';
+  }
+  return '7- Por não ter contrato de trabalho efetivo, o seu caso torna-se um pouco mais complexo. Teria 10% em capitais próprios para dar de entrada?\nSIM ou NÃO';
 }
 
 /**
@@ -174,87 +194,80 @@ function financingQuestion(mode, n) {
  * @param {'SIM'|'NAO'} q3
  * @param {'SIM'|'NAO'} q4
  * @param {'SIM'|'NAO'} q5
+ * @param {'SIM'|'NAO'|undefined} q7 só preenchido quando q3 é NÃO (pergunta 7)
  */
-function classifyFinancingAnswers(q2, q3, q4, q5) {
-  if (q3 === 'NAO') {
+function classifyFinancingAnswers(q2, q3, q4, q5, q7) {
+  if (q3 === 'NAO' && q7 !== 'SIM') {
     return {
       key: 'inviavel',
-      comment: 'Resultado inviavel',
+      comment: 'Sem viabilidade identificada no questionário',
       body:
-        'Resultado Inviavel:\n❌ Infelizmente com recibos verdes ou contrato temporário fica muito difícil conseguir aprovação de credito. Talvez ainda nao seja o momento de tentar. Ter um contrato de trabalho efetivo é o principal fator para aprovação dos créditos.',
+        'Resultado inviável:\n❌ Infelizmente com recibos verdes ou contrato temporário fica muito difícil conseguir aprovação de crédito. Talvez ainda não seja o momento de tentar. Ter um contrato de trabalho efetivo é o principal fator para a aprovação dos créditos.',
+    };
+  }
+  if (q3 === 'NAO' && q7 === 'SIM') {
+    return {
+      key: 'indef-sem-ctef-10',
+      comment: 'Possível viabilidade a confirmar (sem CTEF, com ~10% de entrada)',
+      body:
+        'Resultado indefinido:\n✅ Sem contrato de trabalho efetivo, os bancos tendem a ser mais exigentes; ao indicar que dispõe de cerca de 10% em capitais próprios para entrada, o seu caso deixa de ser automaticamente inviável e pode haver margem para analisar soluções com um gestor de crédito. Não é garantia de aprovação, mas vale reunir a documentação e pedir uma avaliação personalizada.',
     };
   }
   if (q2 === 'SIM' && q3 === 'SIM' && q4 === 'SIM' && q5 === 'SIM') {
     return {
       key: '100',
-      comment: 'Resultado 100%',
+      comment: 'Possível viabilidade de 100%',
       body:
-        'Resultado 100%:\n✅ Em termos gerais, voce possui viabilidade para aprovaçao de financiamento de 100% do valor da casa!',
+        'Resultado 100%:\n✅ Em termos gerais, você tem viabilidade para aprovação de financiamento de 100% do valor da casa!',
     };
   }
   if (q2 === 'NAO' && q3 === 'SIM' && q4 === 'SIM') {
     return {
       key: '80',
-      comment: 'Resultado 80%',
+      comment: 'Possível viabilidade de 80%',
       body:
-        'Resultado 80%:\n✅ Em termos gerais, voce possui viabilidade para aprovaçao de financiamento de 80% do valor da casa. Você pode financiar como investidor estrangeiro. Nesse caso você teria que dar 20% de entrada com capitais próprios',
+        'Resultado 80%:\n✅ Em termos gerais, você tem viabilidade para aprovação de financiamento de 80% do valor da casa. Você pode financiar como investidor estrangeiro. Nesse caso teria de dar 20% de entrada com capitais próprios.',
     };
   }
   if (q4 === 'NAO' && q2 === 'SIM' && q3 === 'SIM' && q5 === 'SIM') {
     return {
       key: 'indef100',
-      comment: 'Resultado possível 100%',
+      comment: 'Possível viabilidade até 100% (a confirmar)',
       body:
-        'Resultado Indefinido:\n✅ Em termos gerais seu caso é dificil por conta de nao ter o IRs ainda, mas vale a pena tentar. Quando tiver o IRs voce pode conseguir ate uma aprovação de 100%!',
+        'Resultado indefinido:\n✅ Em termos gerais o seu caso é difícil por ainda não ter o IRS, mas vale a pena tentar. Quando tiver o IRS, pode conseguir até uma aprovação de 100%!',
     };
   }
   if (q4 === 'NAO' && q2 === 'SIM' && q3 === 'SIM') {
     return {
       key: 'indef90',
-      comment: 'Resultado possível 90%',
+      comment: 'Possível viabilidade de 90% (a confirmar)',
       body:
-        'Resultado Indefinido:\n✅ Em termos gerais seu caso é dificil por conta de nao ter o IRs ainda, mas vale a pena tentar. Quando tiver o IRs voce pode conseguir uma aprovação de 90% do valor da casa. E ai você teria que dar 10% de entrada com capitais próprios.',
+        'Resultado indefinido:\n✅ Em termos gerais o seu caso é difícil por ainda não ter o IRS, mas vale a pena tentar. Quando tiver o IRS, pode conseguir uma aprovação de 90% do valor da casa. E aí teria de dar 10% de entrada com capitais próprios.',
     };
   }
   if (q2 === 'SIM' && q3 === 'SIM' && q4 === 'SIM' && q5 === 'NAO') {
     return {
       key: '90',
-      comment: 'Resultado 90%',
+      comment: 'Possível viabilidade de 90%',
       body:
-        'Resultado 90%:\n✅ Em termos gerais, voce possui viabilidade para aprovaçao de financiamento de 90% do valor da casa. E ai você teria que dar 10% de entrada com capitais próprios.',
+        'Resultado 90%:\n✅ Em termos gerais, você tem viabilidade para aprovação de financiamento de 90% do valor da casa. E aí teria de dar 10% de entrada com capitais próprios.',
     };
   }
   return {
     key: 'fallback',
-    comment: 'Resultado possível 90%',
+    comment: 'Possível viabilidade a confirmar (caso com particularidades)',
     body:
-      'Resultado Indefinido:\n✅ Em termos gerais seu caso tem particularidades. Vale a pena tentar e falar com um gestor de crédito para analisar o seu caso em detalhe.',
+      'Resultado indefinido:\n✅ Em termos gerais o seu caso tem particularidades. Vale a pena tentar e falar com um gestor de crédito para analisar o seu caso em detalhe.',
   };
 }
 
-/** Até à linha do link; depois o flow fica à espera de qualquer mensagem do lead. */
-const FINANCING_FOLLOWUP_UNTIL_DOCS_LINE = [
-  'Se fizer sentido e quiser avançar com o seu processo, nos indicamos iniciar analise gratuita especifica do seu caso com um gestor de credito. Voce envia os documentos necessários para ele e ele vai levar esses documentos para todos os bancos afim de conseguir uma pré-aprovação. Com a pre-aprovação em mãos, voce ja pode começar a procurar e visitar as casas. Para receber o contato do gestor de credito que indicamos bem como a lista de documentos necessários, pedimos que confirme seu email no link a seguir:',
+/** Mensagens após criar o lead (inclui link de upload); fim do flow do quiz. */
+const FINANCING_FOLLOWUP_MESSAGES = [
+  'Para receber o contacto do gestor de crédito que indicamos, bem como a lista de documentos necessários, pedimos que confirme o seu e-mail no link a seguir:',
   null,
-  'Voce pode usar esse link para enviar os documentos para iniciar sua analise gratuita com o seu gestor.',
+  'Pode usar este link para enviar os documentos e iniciar a sua análise gratuita com o seu gestor.',
+  'Se ficou alguma dúvida, deixe aqui que, assim que eu puder, respondo.',
 ];
-
-/** Enviadas na **primeira** mensagem do lead depois da fase anterior; depois encerra o flow. */
-const FINANCING_FOLLOWUP_AFTER_ANY_MESSAGE = [
-  'Infelizmente por aqui nao consigo atender todo mundo, mas se precisar falar comigo, deixa uma mensagem no Instagram que assim que eu ver eu te respondo.',
-  'te recomendamos acompanhar nosso canal no YouTube onde contamos sobre o nosso processo:',
-  'https://www.youtube.com/watch?v=nSuXTX0z9Vk&t=106s',
-  'https://www.youtube.com/watch?v=v04RVqeT9aQ&t=30s',
-  'Em breve vamos lançar um ebook com todas as dicas para conseguir credito e casa em Portugal, bem como um grupo no WhatsApp e lives com gestores de credito todos os domingos!',
-  'Um xero e boa sorte! Rafa',
-];
-
-async function sendFinancingTailAfterUserMessage(whatsappDigits) {
-  for (const line of FINANCING_FOLLOWUP_AFTER_ANY_MESSAGE) {
-    await sendEvolutionText(whatsappDigits, line);
-    await sleep(1200);
-  }
-}
 
 async function startFinancingQuiz(whatsappDigits, pushName) {
   const displayFirstName = firstNameFromPushName(pushName);
@@ -271,10 +284,50 @@ async function startFinancingQuiz(whatsappDigits, pushName) {
   await sleep(1200);
   await sendEvolutionText(
     whatsappDigits,
-    'Vou te fazer 5 perguntas e no final vou te falar em termos gerais se você consegue financiar uma casa em Portugal ok?',
+    'Vou fazer-lhe algumas perguntas e, no final, digo-lhe em termos gerais se consegue financiar uma casa em Portugal, ok?',
   );
   await sleep(1200);
-  await sendEvolutionText(whatsappDigits, '1- Voce é CASADO ou SOLTEIRO?');
+  await sendEvolutionText(
+    whatsappDigits,
+    '1- Você é CASADO ou SOLTEIRO? (Em união de facto, responda como CASADO.)',
+  );
+}
+
+/**
+ * Envia resultado do quiz, cria lead na API e mensagens de follow-up.
+ * @param {string} whatsappDigits
+ * @param {CreditQuizState} state
+ * @param {{ key: string, comment: string, body: string }} outcome
+ */
+async function finishFinancingQuizWithOutcome(whatsappDigits, state, outcome) {
+  await sendEvolutionText(whatsappDigits, outcome.body);
+  await sleep(1200);
+  const nomeLead = state.fullPushName || state.displayFirstName || 'Cliente WhatsApp';
+  try {
+    const data = await createIaAppLead(whatsappDigits, nomeLead, {
+      comentario: outcome.comment,
+    });
+    for (let i = 0; i < FINANCING_FOLLOWUP_MESSAGES.length; i++) {
+      const line = FINANCING_FOLLOWUP_MESSAGES[i];
+      if (line === null) {
+        await sendEvolutionText(whatsappDigits, String(data.upload_url));
+      } else {
+        await sendEvolutionText(whatsappDigits, line);
+      }
+      await sleep(1200);
+    }
+    clearCreditQuizState(whatsappDigits);
+  } catch (err) {
+    const detail = err?.message || String(err);
+    console.warn('[wa-verify] financing-quiz: lead falhou', { whatsapp: whatsappDigits, detail });
+    await sendEvolutionText(
+      whatsappDigits,
+      'Erro ao registar o seu contacto. Tente mais tarde ou escreva "criar conta".',
+    );
+    await sleep(800);
+    await sendEvolutionText(whatsappDigits, detail);
+    clearCreditQuizState(whatsappDigits);
+  }
 }
 
 /**
@@ -287,21 +340,18 @@ async function tryHandleFinancingQuiz(whatsappDigits, trimmed, pushName) {
   const state = getCreditQuizState(whatsappDigits);
   if (!state) return false;
 
-  if (state.step === 'AWAIT_TAIL_AFTER_DOCS') {
-    await sendFinancingTailAfterUserMessage(whatsappDigits);
-    clearCreditQuizState(whatsappDigits);
-    return true;
-  }
-
   if (state.step === 'AWAIT_MARITAL') {
     const marital = parseMaritalStatus(trimmed);
     if (!marital) {
       await sendEvolutionText(
         whatsappDigits,
-        'Nao entendi. Por favor responda com uma destas opções: CASADO, CASADA, SOLTEIRO ou SOLTEIRA.',
+        'Não entendi. Por favor responda com uma destas opções: CASADO, CASADA, SOLTEIRO ou SOLTEIRA.',
       );
       await sleep(800);
-      await sendEvolutionText(whatsappDigits, '1- Voce é CASADO ou SOLTEIRO?');
+      await sendEvolutionText(
+        whatsappDigits,
+        '1- Você é CASADO ou SOLTEIRO? (Em união de facto, responda como CASADO.)',
+      );
       setCreditQuizState(whatsappDigits, state);
       return true;
     }
@@ -313,6 +363,36 @@ async function tryHandleFinancingQuiz(whatsappDigits, trimmed, pushName) {
     return true;
   }
 
+  if (state.step === 'AWAIT_Q7') {
+    const ans7 = parseSimNao(trimmed);
+    if (!ans7) {
+      await sendEvolutionText(
+        whatsappDigits,
+        'Não entendi. Por favor responda apenas com SIM ou NÃO.',
+      );
+      await sleep(800);
+      await sendEvolutionText(whatsappDigits, financingQuestionSeven(/** @type {'casado'|'solteiro'} */ (state.mode)));
+      setCreditQuizState(whatsappDigits, state);
+      return true;
+    }
+    state.answers.q7 = ans7;
+    if (ans7 === 'NAO') {
+      const outcome = classifyFinancingAnswers(
+        /** @type {'SIM'|'NAO'} */ (state.answers.q2),
+        'NAO',
+        undefined,
+        undefined,
+        'NAO',
+      );
+      await finishFinancingQuizWithOutcome(whatsappDigits, state, outcome);
+      return true;
+    }
+    state.step = 'AWAIT_Q4';
+    setCreditQuizState(whatsappDigits, state);
+    await sendEvolutionText(whatsappDigits, financingQuestion(/** @type {'casado'|'solteiro'} */ (state.mode), 4));
+    return true;
+  }
+
   const stepToNum = { AWAIT_Q2: 2, AWAIT_Q3: 3, AWAIT_Q4: 4, AWAIT_Q5: 5 };
   const stepKey = state.step;
   if (!(stepKey in stepToNum)) return false;
@@ -321,7 +401,7 @@ async function tryHandleFinancingQuiz(whatsappDigits, trimmed, pushName) {
   if (!ans) {
     await sendEvolutionText(
       whatsappDigits,
-      'Nao entendi. Por favor responda apenas com SIM ou NAO.',
+      'Não entendi. Por favor responda apenas com SIM ou NÃO.',
     );
     await sleep(800);
     await sendEvolutionText(
@@ -338,6 +418,15 @@ async function tryHandleFinancingQuiz(whatsappDigits, trimmed, pushName) {
   else state.answers.q5 = ans;
 
   if (num < 5) {
+    if (num === 3 && ans === 'NAO') {
+      state.step = 'AWAIT_Q7';
+      setCreditQuizState(whatsappDigits, state);
+      await sendEvolutionText(
+        whatsappDigits,
+        financingQuestionSeven(/** @type {'casado'|'solteiro'} */ (state.mode)),
+      );
+      return true;
+    }
     const next = /** @type {'AWAIT_Q2'|'AWAIT_Q3'|'AWAIT_Q4'|'AWAIT_Q5'} */ (
       num === 2 ? 'AWAIT_Q3' : num === 3 ? 'AWAIT_Q4' : 'AWAIT_Q5'
     );
@@ -352,36 +441,13 @@ async function tryHandleFinancingQuiz(whatsappDigits, trimmed, pushName) {
     clearCreditQuizState(whatsappDigits);
     return true;
   }
-  const outcome = classifyFinancingAnswers(q2, q3, q4, state.answers.q5);
-  await sendEvolutionText(whatsappDigits, outcome.body);
-  await sleep(1200);
-
-  const nomeLead = state.fullPushName || state.displayFirstName || 'Cliente WhatsApp';
-  try {
-    const data = await createIaAppLead(whatsappDigits, nomeLead, {
-      comentario: outcome.comment,
-    });
-    for (let i = 0; i < FINANCING_FOLLOWUP_UNTIL_DOCS_LINE.length; i++) {
-      const line = FINANCING_FOLLOWUP_UNTIL_DOCS_LINE[i];
-      if (line === null) {
-        await sendEvolutionText(whatsappDigits, String(data.upload_url));
-      } else {
-        await sendEvolutionText(whatsappDigits, line);
-      }
-      await sleep(1200);
-    }
-    state.step = 'AWAIT_TAIL_AFTER_DOCS';
-    setCreditQuizState(whatsappDigits, state);
-    return true;
-  } catch (err) {
-    const detail = err?.message || String(err);
-    console.warn('[wa-verify] financing-quiz: lead falhou', { whatsapp: whatsappDigits, detail });
-    await sendEvolutionText(whatsappDigits, 'Erro ao registar o teu contacto. Tenta mais tarde ou escreve criar conta.');
-    await sleep(800);
-    await sendEvolutionText(whatsappDigits, detail);
+  if (q3 === 'NAO' && state.answers.q7 !== 'SIM') {
     clearCreditQuizState(whatsappDigits);
     return true;
   }
+  const outcome = classifyFinancingAnswers(q2, q3, q4, state.answers.q5, state.answers.q7);
+  await finishFinancingQuizWithOutcome(whatsappDigits, state, outcome);
+  return true;
 }
 
 /**
@@ -451,7 +517,7 @@ async function sendCreateAccountFlow({ whatsappDigits, contactName }) {
   } catch (err) {
     const detail = err?.message || String(err);
     console.warn('[wa-verify] create-account: falhou', { whatsapp: whatsappDigits, detail });
-    await sendEvolutionText(whatsappDigits, 'Erro ao criar sua conta');
+    await sendEvolutionText(whatsappDigits, 'Erro ao criar a sua conta');
     await sleep(1200);
     await sendEvolutionText(whatsappDigits, detail);
     return { ok: false, error: detail };
@@ -468,20 +534,20 @@ async function sendCreditHelpFlow({ whatsappDigits, contactName }) {
   creditHelpLastTriggeredAt.set(whatsappDigits, now);
 
   const safeName = String(contactName || '').trim();
-  const hello = safeName ? `oi ${safeName} tudo bem?` : 'oi, tudo bem?';
+  const hello = safeName ? `Oi, ${safeName}, tudo bem?` : 'Oi, tudo bem?';
 
   const messages = [
     hello,
-    'Você tem dúvidas ou já quer mesmo iniciar sua análise gratuita com a gestora?',
-    'Vou te falar basicamente como funciona o processo de credito habitação',
-    'Voce entra em contato com a gestora ou gestor, ele vai recolher os documentos necessarios e vai levar para todos os bancos, nao apenas para o banco que voce ja tem conta. Ele vai ver quais bancos aprovam o financiamento nas condiçoes que voce precisa e quais oferecem melhores taxas. uma vez aprovado, o banco vai dizer o maximo de valor que ele libera pra voce... 100 mil ou 150 mil ou 200 mil.. enfim, sabendo esse valor maximo, voce começa a busca pelas casas dentro desse valor. Esse serviço da gestora é gratuito, quem paga a comissao dela sao os bancos.',
-    'Geralmente os bancos pedem 10% de entrada e financiam 90% do valor do imovel',
-    'Te indico ver esses videos onde falamos um pouco sobre como foi o nosso processo e outro que tiramos duvidas com a gestora:',
+    'Você tem dúvidas ou já quer mesmo iniciar a sua análise gratuita com a gestora?',
+    'Vou falar-lhe basicamente de que forma funciona o processo de crédito habitação.',
+    'Você entra em contacto com a gestora ou o gestor: ele recolhe os documentos necessários e leva-os a todos os bancos, não só ao banco onde já tem conta. Ele vê que bancos aprovam o financiamento nas condições de que precisa e quais oferecem melhores taxas. Uma vez aprovado, o banco diz o montante máximo que libera para si… 100 mil, 150 mil, 200 mil, etc. Sabendo esse teto, começa a procurar casas dentro desse valor. O serviço da gestora é gratuito: quem paga a comissão são os bancos.',
+    'Em geral os bancos pedem 10% de entrada e financiam 90% do valor do imóvel.',
+    'Recomendo estes vídeos, em que falamos do nosso processo e em que tirámos dúvidas com a gestora:',
     'https://www.youtube.com/watch?v=nSuXTX0z9Vk',
     'https://www.youtube.com/watch?v=v04RVqeT9aQ',
-    'Pra iniciar sua análise você deixa seu contato nesse link e vai receber o contato da gestora por e-mail e a lista de documentos:',
+    'Para iniciar a análise, deixe o seu contacto neste link; receberá o contacto da gestora por e-mail e a lista de documentos:',
     'https://www.ia.rafaapelomundo.com/credito',
-    'E qualquer duvida eu fico a disposição 😃',
+    'Para qualquer dúvida, estou à disposição 😃',
   ];
 
   console.log('[wa-verify] credit-help: sending flow', {
@@ -714,7 +780,7 @@ async function evolutionWebhookHandler(req, res) {
       }
 
       // Gatilhos globais (reiniciam / cancelam quiz de financiamento em curso)
-      if (normalizeText(trimmed) === FINANCING_QUIZ_TRIGGER) {
+      if (FINANCING_QUIZ_TRIGGERS.has(normalizeText(maybeUrlDecodeInboundText(trimmed)))) {
         clearCreditQuizState(whatsapp);
         startFinancingQuiz(whatsapp, pushName || '').catch((err) => {
           console.warn('[wa-verify] financing-quiz: erro ao iniciar', err?.message || err);

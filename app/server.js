@@ -56,7 +56,7 @@ const QUIZ_STATE_TTL_MS = 24 * 60 * 60 * 1000;
 
 /**
  * @typedef {{
- *   step: 'AWAIT_MARITAL' | 'AWAIT_Q2' | 'AWAIT_Q3' | 'AWAIT_Q4' | 'AWAIT_Q5',
+ *   step: 'AWAIT_MARITAL' | 'AWAIT_Q2' | 'AWAIT_Q3' | 'AWAIT_Q4' | 'AWAIT_Q5' | 'AWAIT_TAIL_AFTER_DOCS',
  *   mode: 'casado' | 'solteiro' | null,
  *   answers: { q2?: 'SIM' | 'NAO'; q3?: 'SIM' | 'NAO'; q4?: 'SIM' | 'NAO'; q5?: 'SIM' | 'NAO' },
  *   displayFirstName: string,
@@ -232,17 +232,29 @@ function classifyFinancingAnswers(q2, q3, q4, q5) {
   };
 }
 
-const FINANCING_FOLLOWUP_MESSAGES = [
+/** Até à linha do link; depois o flow fica à espera de qualquer mensagem do lead. */
+const FINANCING_FOLLOWUP_UNTIL_DOCS_LINE = [
   'Se fizer sentido e quiser avançar com o seu processo, nos indicamos iniciar analise gratuita especifica do seu caso com um gestor de credito. Voce envia os documentos necessários para ele e ele vai levar esses documentos para todos os bancos afim de conseguir uma pré-aprovação. Com a pre-aprovação em mãos, voce ja pode começar a procurar e visitar as casas. Para receber o contato do gestor de credito que indicamos bem como a lista de documentos necessários, pedimos que confirme seu email no link a seguir:',
   null,
   'Voce pode usar esse link para enviar os documentos para iniciar sua analise gratuita com o seu gestor.',
-  'No mais, te recomendamos acompanhar nosso canal no YouTube onde contamos sobre o nosso processo:',
+];
+
+/** Enviadas na **primeira** mensagem do lead depois da fase anterior; depois encerra o flow. */
+const FINANCING_FOLLOWUP_AFTER_ANY_MESSAGE = [
+  'Infelizmente por aqui nao consigo atender todo mundo, mas se precisar falar comigo, deixa uma mensagem no Instagram que assim que eu ver eu te respondo.',
+  'te recomendamos acompanhar nosso canal no YouTube onde contamos sobre o nosso processo:',
   'https://www.youtube.com/watch?v=nSuXTX0z9Vk&t=106s',
   'https://www.youtube.com/watch?v=v04RVqeT9aQ&t=30s',
   'Em breve vamos lançar um ebook com todas as dicas para conseguir credito e casa em Portugal, bem como um grupo no WhatsApp e lives com gestores de credito todos os domingos!',
-  'Infelizmente por aqui nao consigo atender todo mundo, mas se precisar falar comigo, deixa uma mensagem no Instagram que assim que eu ver eu te respondo.',
   'Um xero e boa sorte! Rafa',
 ];
+
+async function sendFinancingTailAfterUserMessage(whatsappDigits) {
+  for (const line of FINANCING_FOLLOWUP_AFTER_ANY_MESSAGE) {
+    await sendEvolutionText(whatsappDigits, line);
+    await sleep(1200);
+  }
+}
 
 async function startFinancingQuiz(whatsappDigits, pushName) {
   const displayFirstName = firstNameFromPushName(pushName);
@@ -274,6 +286,12 @@ async function startFinancingQuiz(whatsappDigits, pushName) {
 async function tryHandleFinancingQuiz(whatsappDigits, trimmed, pushName) {
   const state = getCreditQuizState(whatsappDigits);
   if (!state) return false;
+
+  if (state.step === 'AWAIT_TAIL_AFTER_DOCS') {
+    await sendFinancingTailAfterUserMessage(whatsappDigits);
+    clearCreditQuizState(whatsappDigits);
+    return true;
+  }
 
   if (state.step === 'AWAIT_MARITAL') {
     const marital = parseMaritalStatus(trimmed);
@@ -343,8 +361,8 @@ async function tryHandleFinancingQuiz(whatsappDigits, trimmed, pushName) {
     const data = await createIaAppLead(whatsappDigits, nomeLead, {
       comentario: outcome.comment,
     });
-    for (let i = 0; i < FINANCING_FOLLOWUP_MESSAGES.length; i++) {
-      const line = FINANCING_FOLLOWUP_MESSAGES[i];
+    for (let i = 0; i < FINANCING_FOLLOWUP_UNTIL_DOCS_LINE.length; i++) {
+      const line = FINANCING_FOLLOWUP_UNTIL_DOCS_LINE[i];
       if (line === null) {
         await sendEvolutionText(whatsappDigits, String(data.upload_url));
       } else {
@@ -352,15 +370,18 @@ async function tryHandleFinancingQuiz(whatsappDigits, trimmed, pushName) {
       }
       await sleep(1200);
     }
+    state.step = 'AWAIT_TAIL_AFTER_DOCS';
+    setCreditQuizState(whatsappDigits, state);
+    return true;
   } catch (err) {
     const detail = err?.message || String(err);
     console.warn('[wa-verify] financing-quiz: lead falhou', { whatsapp: whatsappDigits, detail });
     await sendEvolutionText(whatsappDigits, 'Erro ao registar o teu contacto. Tenta mais tarde ou escreve criar conta.');
     await sleep(800);
     await sendEvolutionText(whatsappDigits, detail);
+    clearCreditQuizState(whatsappDigits);
+    return true;
   }
-  clearCreditQuizState(whatsappDigits);
-  return true;
 }
 
 /**

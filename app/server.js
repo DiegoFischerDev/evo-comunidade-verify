@@ -31,6 +31,11 @@ const CREDIT_HELP_COOLDOWN_MS = Number(process.env.CREDIT_HELP_COOLDOWN_MS || 10
 /** @type {Map<string, number>} */
 const creditHelpLastTriggeredAt = new Map();
 
+/** Lead na ia-app (POST /api/integration/leads) — ver API-INTEGRACAO.md na raiz do monorepo */
+const CREATE_ACCOUNT_COOLDOWN_MS = Number(process.env.CREATE_ACCOUNT_COOLDOWN_MS || 5 * 60 * 1000);
+/** @type {Map<string, number>} */
+const createAccountLastTriggeredAt = new Map();
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -45,6 +50,76 @@ function normalizeText(text) {
 }
 
 const CREDIT_HELP_TRIGGER = normalizeText('Ola, preciso de ajuda em relação ao contato da gestora de crédito');
+
+const CREATE_ACCOUNT_TRIGGER = normalizeText('criar conta');
+
+/**
+ * @param {string} whatsappDigits
+ * @param {string} nome
+ * @returns {Promise<{ ok: true, id: number, upload_url: string, lead?: unknown }>}
+ */
+async function createIaAppLead(whatsappDigits, nome) {
+  const base = (process.env.IA_APP_BASE_URL || 'https://ia.rafaapelomundo.com').replace(/\/$/, '');
+  const secret = process.env.IA_APP_INTEGRATION_SECRET || '';
+  if (!secret) {
+    throw new Error('Integração não configurada no servidor.');
+  }
+  const res = await fetch(`${base}/api/integration/leads`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'X-Integration-Secret': secret,
+    },
+    body: JSON.stringify({
+      whatsapp: whatsappDigits,
+      nome: nome || 'Cliente WhatsApp',
+    }),
+  });
+  const raw = await res.text();
+  let json = {};
+  try {
+    json = raw ? JSON.parse(raw) : {};
+  } catch {
+    json = {};
+  }
+  if (res.status === 201 && json.ok === true && typeof json.upload_url === 'string' && json.upload_url) {
+    return json;
+  }
+  const apiMsg =
+    (Array.isArray(json?.message) ? json.message.join(' ') : json?.message) ||
+    json?.error ||
+    (raw && raw.length < 800 ? raw.trim() : '') ||
+    `Erro HTTP ${res.status}`;
+  throw new Error(String(apiMsg).trim() || `Erro HTTP ${res.status}`);
+}
+
+async function sendCreateAccountFlow({ whatsappDigits, contactName }) {
+  const now = Date.now();
+  const last = createAccountLastTriggeredAt.get(whatsappDigits) || 0;
+  if (now - last < CREATE_ACCOUNT_COOLDOWN_MS) {
+    console.log('[wa-verify] create-account: cooldown', { whatsapp: whatsappDigits });
+    return { ok: true, skipped: 'cooldown' };
+  }
+  createAccountLastTriggeredAt.set(whatsappDigits, now);
+
+  const nome = String(contactName || '').trim() || 'Cliente WhatsApp';
+
+  try {
+    const data = await createIaAppLead(whatsappDigits, nome);
+    console.log('[wa-verify] create-account: lead criado', { whatsapp: whatsappDigits, id: data.id });
+    await sendEvolutionText(whatsappDigits, 'Aqui está o seu link para upload:');
+    await sleep(1200);
+    await sendEvolutionText(whatsappDigits, String(data.upload_url));
+    return { ok: true, sent: 'success' };
+  } catch (err) {
+    const detail = err?.message || String(err);
+    console.warn('[wa-verify] create-account: falhou', { whatsapp: whatsappDigits, detail });
+    await sendEvolutionText(whatsappDigits, 'Erro ao criar sua conta');
+    await sleep(1200);
+    await sendEvolutionText(whatsappDigits, detail);
+    return { ok: false, error: detail };
+  }
+}
 
 async function sendCreditHelpFlow({ whatsappDigits, contactName }) {
   const now = Date.now();
@@ -268,6 +343,15 @@ async function evolutionWebhookHandler(req, res) {
           console.warn('[wa-verify] credit-help: erro ao enviar flow:', err?.message || err);
         });
         // não bufferiza esta mensagem (evita misturar com confirmação por código)
+        anyBuffered = true;
+        continue;
+      }
+
+      // Flow: criar lead na ia-app (upload / documentos)
+      if (normalizeText(trimmed) === CREATE_ACCOUNT_TRIGGER) {
+        sendCreateAccountFlow({ whatsappDigits: whatsapp, contactName: pushName }).catch((err) => {
+          console.warn('[wa-verify] create-account: exceção:', err?.message || err);
+        });
         anyBuffered = true;
         continue;
       }

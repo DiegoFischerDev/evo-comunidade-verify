@@ -31,11 +31,6 @@ const CREDIT_HELP_COOLDOWN_MS = Number(process.env.CREDIT_HELP_COOLDOWN_MS || 10
 /** @type {Map<string, number>} */
 const creditHelpLastTriggeredAt = new Map();
 
-/** Lead na ia-app (POST /api/integration/leads) — ver API-INTEGRACAO.md na raiz do monorepo */
-const CREATE_ACCOUNT_COOLDOWN_MS = Number(process.env.CREATE_ACCOUNT_COOLDOWN_MS || 5 * 60 * 1000);
-/** @type {Map<string, number>} */
-const createAccountLastTriggeredAt = new Map();
-
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -56,7 +51,7 @@ const CREATE_ACCOUNT_TRIGGER = normalizeText('criar conta');
 /**
  * @param {string} whatsappDigits
  * @param {string} nome
- * @returns {Promise<{ ok: true, id: number, upload_url: string, lead?: unknown }>}
+ * @returns {Promise<{ ok: true, id: number, upload_url: string, existing?: boolean, lead?: unknown }>}
  */
 async function createIaAppLead(whatsappDigits, nome) {
   const base = (process.env.IA_APP_BASE_URL || 'https://ia.rafaapelomundo.com/').replace(/\/$/, '');
@@ -82,7 +77,12 @@ async function createIaAppLead(whatsappDigits, nome) {
   } catch {
     json = {};
   }
-  if (res.status === 201 && json.ok === true && typeof json.upload_url === 'string' && json.upload_url) {
+  const okLead =
+    (res.status === 201 || res.status === 200) &&
+    json.ok === true &&
+    typeof json.upload_url === 'string' &&
+    json.upload_url;
+  if (okLead) {
     return json;
   }
   const apiMsg =
@@ -94,19 +94,15 @@ async function createIaAppLead(whatsappDigits, nome) {
 }
 
 async function sendCreateAccountFlow({ whatsappDigits, contactName }) {
-  const now = Date.now();
-  const last = createAccountLastTriggeredAt.get(whatsappDigits) || 0;
-  if (now - last < CREATE_ACCOUNT_COOLDOWN_MS) {
-    console.log('[wa-verify] create-account: cooldown', { whatsapp: whatsappDigits });
-    return { ok: true, skipped: 'cooldown' };
-  }
-  createAccountLastTriggeredAt.set(whatsappDigits, now);
-
   const nome = String(contactName || '').trim() || 'Cliente WhatsApp';
 
   try {
     const data = await createIaAppLead(whatsappDigits, nome);
-    console.log('[wa-verify] create-account: lead criado', { whatsapp: whatsappDigits, id: data.id });
+    console.log('[wa-verify] create-account: ok', {
+      whatsapp: whatsappDigits,
+      id: data.id,
+      existing: data.existing === true,
+    });
     await sendEvolutionText(whatsappDigits, 'Aqui está o seu link para upload:');
     await sleep(1200);
     await sendEvolutionText(whatsappDigits, String(data.upload_url));

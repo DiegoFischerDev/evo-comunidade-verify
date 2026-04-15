@@ -318,6 +318,18 @@ async function startFinancingQuiz(whatsappDigits, pushName) {
     pendingCapitalPercent: undefined,
     updatedAt: Date.now(),
   });
+
+  // Cria (ou reutiliza) o lead assim que o utilizador inicia o questionário.
+  // Importante: o backend só grava `comentario` quando o lead é novo (existing=false).
+  createIaAppLead(whatsappDigits, fullPushName, { comentario: 'Questionário de financiamento iniciado' }).catch(
+    (err) => {
+      console.warn(
+        '[wa-verify] financing-quiz: falha ao criar lead no início',
+        err?.message || err,
+      );
+    },
+  );
+
   await sendEvolutionText(whatsappDigits, `Oi ${displayFirstName} tudo bem?`);
   await sleep(1200);
   await sendEvolutionText(
@@ -343,12 +355,21 @@ async function finishFinancingQuizWithOutcome(whatsappDigits, state, outcome) {
 
   const summary = buildQuizSummary(state);
   const comentario = summary;
+  const comentarioAppend = `Quiz financiamento (${new Date().toISOString().slice(0, 10)}): ${outcome.comment}. Respostas: ${summary}`;
 
   const nomeLead = state.fullPushName || state.displayFirstName || 'Cliente WhatsApp';
   try {
     const data = await createIaAppLead(whatsappDigits, nomeLead, {
       comentario,
     });
+    try {
+      await patchIaAppLeadComment(whatsappDigits, comentarioAppend, 'append');
+    } catch (err) {
+      console.warn(
+        '[wa-verify] financing-quiz: falha ao atualizar comentário do lead',
+        err?.message || err,
+      );
+    }
     if (outcome.key === 'inviavel') {
       await sendEvolutionText(whatsappDigits, FINANCING_INVIABLE_RETRY_MESSAGE);
       clearCreditQuizState(whatsappDigits);
@@ -601,6 +622,53 @@ async function createIaAppLead(whatsappDigits, nome, options = {}) {
   if (okLead) {
     return json;
   }
+  const apiMsg =
+    (Array.isArray(json?.message) ? json.message.join(' ') : json?.message) ||
+    json?.error ||
+    (raw && raw.length < 800 ? raw.trim() : '') ||
+    `Erro HTTP ${res.status}`;
+  throw new Error(String(apiMsg).trim() || `Erro HTTP ${res.status}`);
+}
+
+/**
+ * Atualiza o comentário de um lead existente (por WhatsApp).
+ * @param {string} whatsappDigits
+ * @param {string} comentario
+ * @param {'append'|'replace'} [mode]
+ */
+async function patchIaAppLeadComment(whatsappDigits, comentario, mode = 'append') {
+  const base = (process.env.IA_APP_BASE_URL || 'https://ia.rafaapelomundo.com/').replace(/\/$/, '');
+  const secret = process.env.IA_APP_INTEGRATION_SECRET || '';
+  if (!secret) {
+    throw new Error('Integração não configurada no servidor.');
+  }
+  const body = {
+    whatsapp: whatsappDigits,
+    comentario: String(comentario || '').trim(),
+    mode,
+  };
+  if (!body.comentario) {
+    throw new Error('Comentário vazio.');
+  }
+
+  const res = await fetch(`${base}/api/integration/leads/comment`, {
+    method: 'PATCH',
+    headers: {
+      'content-type': 'application/json',
+      'X-Integration-Secret': secret,
+    },
+    body: JSON.stringify(body),
+  });
+  const raw = await res.text();
+  let json = {};
+  try {
+    json = raw ? JSON.parse(raw) : {};
+  } catch {
+    json = {};
+  }
+  const ok = res.status === 200 && json.ok === true;
+  if (ok) return json;
+
   const apiMsg =
     (Array.isArray(json?.message) ? json.message.join(' ') : json?.message) ||
     json?.error ||

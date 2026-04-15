@@ -362,7 +362,7 @@ async function finishFinancingQuizWithOutcome(whatsappDigits, state, outcome) {
       comentario,
     });
     try {
-      await patchIaAppLeadComment(whatsappDigits, comentarioAppend, 'append');
+      await patchIaAppLeadComment(whatsappDigits, comentarioAppend);
     } catch (err) {
       console.warn(
         '[wa-verify] financing-quiz: falha ao atualizar comentário do lead',
@@ -633,9 +633,8 @@ async function createIaAppLead(whatsappDigits, nome, options = {}) {
  * Atualiza o comentário de um lead existente (por WhatsApp).
  * @param {string} whatsappDigits
  * @param {string} comentario
- * @param {'append'|'replace'} [mode]
  */
-async function patchIaAppLeadComment(whatsappDigits, comentario, mode = 'append') {
+async function patchIaAppLeadComment(whatsappDigits, comentario) {
   const base = (process.env.IA_APP_BASE_URL || 'https://ia.rafaapelomundo.com/').replace(/\/$/, '');
   const secret = process.env.IA_APP_INTEGRATION_SECRET || '';
   if (!secret) {
@@ -644,7 +643,6 @@ async function patchIaAppLeadComment(whatsappDigits, comentario, mode = 'append'
   const body = {
     whatsapp: whatsappDigits,
     comentario: String(comentario || '').trim(),
-    mode,
   };
   if (!body.comentario) {
     throw new Error('Comentário vazio.');

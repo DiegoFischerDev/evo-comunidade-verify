@@ -320,8 +320,7 @@ async function startFinancingQuiz(whatsappDigits, pushName) {
   });
 
   // Cria (ou reutiliza) o lead assim que o utilizador inicia o questionário.
-  // Importante: o backend só grava `comentario` quando o lead é novo (existing=false).
-  createIaAppLead(whatsappDigits, fullPushName, { comentario: 'Questionário de financiamento iniciado' }).catch(
+  createIaAppLead(whatsappDigits, fullPushName).catch(
     (err) => {
       console.warn(
         '[wa-verify] financing-quiz: falha ao criar lead no início',

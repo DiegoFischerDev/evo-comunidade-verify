@@ -62,17 +62,21 @@ const CREATE_ACCOUNT_TRIGGER = normalizeText('criar conta');
 const FINANCING_QUIZ_TRIGGERS = new Set([
   normalizeText('Ola, quero saber se consigo financiar uma casa em Portugal'),
   normalizeText('Oi, quero saber se consigo financiar uma casa em Portugal'),
+  // Atalho para refazer o questionário (normalizeText remove acentos)
+  normalizeText('questionario'),
+  normalizeText('questionário'),
 ]);
 
 const QUIZ_STATE_TTL_MS = 24 * 60 * 60 * 1000;
 
 /**
  * @typedef {{
- *   step: 'AWAIT_MARITAL' | 'AWAIT_Q2' | 'AWAIT_Q3' | 'AWAIT_Q7' | 'AWAIT_Q4' | 'AWAIT_Q5',
+ *   step: 'AWAIT_MARITAL' | 'AWAIT_Q2' | 'AWAIT_Q3' | 'AWAIT_Q7' | 'AWAIT_Q4' | 'AWAIT_Q5' | 'AWAIT_CAPITALS',
  *   mode: 'casado' | 'solteiro' | null,
- *   answers: { q2?: 'SIM' | 'NAO'; q3?: 'SIM' | 'NAO'; q7?: 'SIM' | 'NAO'; q4?: 'SIM' | 'NAO'; q5?: 'SIM' | 'NAO' },
+ *   answers: { q2?: 'SIM' | 'NAO'; q3?: 'SIM' | 'NAO'; q7?: 'SIM' | 'NAO'; q4?: 'SIM' | 'NAO'; q5?: 'SIM' | 'NAO'; capitalOk?: 'SIM' | 'NAO'; capitalPercent?: 10 | 20 },
  *   displayFirstName: string,
  *   fullPushName: string,
+ *   pendingCapitalPercent?: 10 | 20,
  *   updatedAt: number,
  * }} CreditQuizState
  */
@@ -189,6 +193,36 @@ function financingQuestionSeven(mode) {
   return '7- Por não ter contrato de trabalho efetivo, o seu caso torna-se um pouco mais complexo. Teria 10% em capitais próprios para dar de entrada?\nSIM ou NÃO';
 }
 
+/** Pergunta extra quando é necessária entrada (capitais próprios). */
+function financingCapitalQuestion(mode, percent) {
+  const p = percent === 20 ? '20%' : '10%';
+  if (mode === 'casado') {
+    return `6- Vocês teriam ${p} do valor da casa em capitais próprios para dar de entrada?\nSIM ou NÃO`;
+  }
+  return `6- Você teria ${p} do valor da casa em capitais próprios para dar de entrada?\nSIM ou NÃO`;
+}
+
+function computeRequiredCapitalPercent(q2, q3, q4, q5) {
+  // Investidor estrangeiro (sem AR/CC): normalmente exige 20% de entrada
+  if (q2 === 'NAO' && q3 === 'SIM' && q4 === 'SIM') return 20;
+  // Casos com 10% de entrada (resultado 90% ou indefinido 90% por falta de IRS)
+  if (q2 === 'SIM' && q3 === 'SIM' && q4 === 'SIM' && q5 === 'NAO') return 10;
+  if (q4 === 'NAO' && q2 === 'SIM' && q3 === 'SIM') return 10;
+  return null;
+}
+
+function buildQuizSummary(state) {
+  const a = state.answers || {};
+  const modeLabel = state.mode === 'casado' ? 'Casado' : state.mode === 'solteiro' ? 'Solteiro' : 'Indefinido';
+  const parts = [modeLabel];
+  if (a.q2) parts.push(a.q2 === 'SIM' ? 'tem AR/CC' : 'não tem AR/CC');
+  if (a.q3) parts.push(a.q3 === 'SIM' ? 'tem CTEF' : 'não tem CTEF');
+  if (a.q4) parts.push(a.q4 === 'SIM' ? 'tem IRS' : 'não tem IRS');
+  if (a.q5) parts.push(a.q5 === 'SIM' ? 'menos de 35 anos' : '35+ anos');
+  if (a.capitalPercent) parts.push(`tem ${a.capitalPercent}%`);
+  return parts.join(', ');
+}
+
 /**
  * @param {'SIM'|'NAO'} q2
  * @param {'SIM'|'NAO'} q3
@@ -269,6 +303,9 @@ const FINANCING_FOLLOWUP_MESSAGES = [
   'Se ficou alguma dúvida, deixe aqui que, assim que eu puder, respondo.',
 ];
 
+const FINANCING_INVIABLE_RETRY_MESSAGE =
+  'Se as condições mudarem e quiser responder ao questionário novamente e avançar com o processo, digite QUESTIONARIO e iniciamos outra análise.';
+
 async function startFinancingQuiz(whatsappDigits, pushName) {
   const displayFirstName = firstNameFromPushName(pushName);
   const fullPushName = String(pushName || '').trim() || displayFirstName;
@@ -278,6 +315,7 @@ async function startFinancingQuiz(whatsappDigits, pushName) {
     answers: {},
     displayFirstName,
     fullPushName,
+    pendingCapitalPercent: undefined,
     updatedAt: Date.now(),
   });
   await sendEvolutionText(whatsappDigits, `Oi ${displayFirstName} tudo bem?`);
@@ -302,11 +340,20 @@ async function startFinancingQuiz(whatsappDigits, pushName) {
 async function finishFinancingQuizWithOutcome(whatsappDigits, state, outcome) {
   await sendEvolutionText(whatsappDigits, outcome.body);
   await sleep(1200);
+
+  const summary = buildQuizSummary(state);
+  const comentario = summary;
+
   const nomeLead = state.fullPushName || state.displayFirstName || 'Cliente WhatsApp';
   try {
     const data = await createIaAppLead(whatsappDigits, nomeLead, {
-      comentario: outcome.comment,
+      comentario,
     });
+    if (outcome.key === 'inviavel') {
+      await sendEvolutionText(whatsappDigits, FINANCING_INVIABLE_RETRY_MESSAGE);
+      clearCreditQuizState(whatsappDigits);
+      return;
+    }
     for (let i = 0; i < FINANCING_FOLLOWUP_MESSAGES.length; i++) {
       const line = FINANCING_FOLLOWUP_MESSAGES[i];
       if (line === null) {
@@ -378,18 +425,64 @@ async function tryHandleFinancingQuiz(whatsappDigits, trimmed, pushName) {
     state.answers.q7 = ans7;
     if (ans7 === 'NAO') {
       const outcome = classifyFinancingAnswers(
-        /** @type {'SIM'|'NAO'} */ (state.answers.q2),
+        /** @type {'SIM'|'NAO'} */ (state.answers.q2 || 'NAO'),
         'NAO',
-        undefined,
-        undefined,
+        /** @type {'SIM'|'NAO'} */ (state.answers.q4 || 'NAO'),
+        /** @type {'SIM'|'NAO'} */ (state.answers.q5 || 'NAO'),
         'NAO',
       );
       await finishFinancingQuizWithOutcome(whatsappDigits, state, outcome);
       return true;
     }
+    // Q7=SIM implica que há 10% para entrada
+    state.answers.capitalOk = 'SIM';
+    state.answers.capitalPercent = 10;
     state.step = 'AWAIT_Q4';
     setCreditQuizState(whatsappDigits, state);
     await sendEvolutionText(whatsappDigits, financingQuestion(/** @type {'casado'|'solteiro'} */ (state.mode), 4));
+    return true;
+  }
+
+  if (state.step === 'AWAIT_CAPITALS') {
+    const ansCap = parseSimNao(trimmed);
+    if (!ansCap) {
+      await sendEvolutionText(
+        whatsappDigits,
+        'Não entendi. Por favor responda apenas com SIM ou NÃO.',
+      );
+      await sleep(800);
+      const pct = state.pendingCapitalPercent || 10;
+      await sendEvolutionText(
+        whatsappDigits,
+        financingCapitalQuestion(/** @type {'casado'|'solteiro'} */ (state.mode), pct),
+      );
+      setCreditQuizState(whatsappDigits, state);
+      return true;
+    }
+
+    state.answers.capitalOk = ansCap;
+    const pct = state.pendingCapitalPercent || 10;
+    if (ansCap === 'SIM') state.answers.capitalPercent = pct;
+    state.pendingCapitalPercent = undefined;
+
+    if (ansCap === 'NAO') {
+      const outcome = {
+        key: 'inviavel',
+        comment: 'Sem viabilidade identificada no questionário',
+        body:
+          'Resultado inviável:\n❌ Sem capitais próprios para a entrada (10% ou 20%, conforme o caso), fica muito difícil conseguir aprovação de crédito.',
+      };
+      await finishFinancingQuizWithOutcome(whatsappDigits, state, outcome);
+      return true;
+    }
+
+    const { q2, q3, q4, q5 } = state.answers;
+    if (!q2 || !q3 || !q4 || !q5) {
+      clearCreditQuizState(whatsappDigits);
+      return true;
+    }
+    const outcome = classifyFinancingAnswers(q2, q3, q4, q5, state.answers.q7);
+    await finishFinancingQuizWithOutcome(whatsappDigits, state, outcome);
     return true;
   }
 
@@ -445,6 +538,22 @@ async function tryHandleFinancingQuiz(whatsappDigits, trimmed, pushName) {
     clearCreditQuizState(whatsappDigits);
     return true;
   }
+
+  // Antes do resultado final, confirmar capitais próprios quando for necessário (10% ou 20%)
+  if (q3 === 'SIM') {
+    const requiredPct = computeRequiredCapitalPercent(q2, q3, q4, state.answers.q5);
+    if (requiredPct && state.answers.capitalOk !== 'SIM') {
+      state.pendingCapitalPercent = requiredPct;
+      state.step = 'AWAIT_CAPITALS';
+      setCreditQuizState(whatsappDigits, state);
+      await sendEvolutionText(
+        whatsappDigits,
+        financingCapitalQuestion(/** @type {'casado'|'solteiro'} */ (state.mode), requiredPct),
+      );
+      return true;
+    }
+  }
+
   const outcome = classifyFinancingAnswers(q2, q3, q4, state.answers.q5, state.answers.q7);
   await finishFinancingQuizWithOutcome(whatsappDigits, state, outcome);
   return true;
@@ -780,7 +889,8 @@ async function evolutionWebhookHandler(req, res) {
       }
 
       // Gatilhos globais (reiniciam / cancelam quiz de financiamento em curso)
-      if (FINANCING_QUIZ_TRIGGERS.has(normalizeText(maybeUrlDecodeInboundText(trimmed)))) {
+      const normalized = normalizeText(maybeUrlDecodeInboundText(trimmed));
+      if (FINANCING_QUIZ_TRIGGERS.has(normalized) || /^questionario\b/.test(normalized)) {
         clearCreditQuizState(whatsapp);
         startFinancingQuiz(whatsapp, pushName || '').catch((err) => {
           console.warn('[wa-verify] financing-quiz: erro ao iniciar', err?.message || err);

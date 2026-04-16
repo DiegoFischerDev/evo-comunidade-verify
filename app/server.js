@@ -11,6 +11,8 @@ const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || '';
 
 // Chamada interna para o backend da Comunidade
 const COMMUNITY_API_URL = (process.env.COMMUNITY_API_URL || '').replace(/\/$/, '');
+// Fallback (ex.: validar código também no stage quando o utilizador gerou no ambiente errado)
+const COMMUNITY_API_URL_FALLBACK = (process.env.COMMUNITY_API_URL_FALLBACK || '').replace(/\/$/, '');
 const COMMUNITY_INTERNAL_SECRET = process.env.COMMUNITY_INTERNAL_SECRET || '';
 
 // Envio de mensagens via Evolution (resposta automática de teste)
@@ -843,24 +845,56 @@ function extractCode(text) {
 }
 
 async function confirmOnCommunity({ code, whatsapp }) {
-  if (!COMMUNITY_API_URL) throw new Error('COMMUNITY_API_URL não configurada');
-  const res = await fetch(`${COMMUNITY_API_URL}/auth/whatsapp/confirm`, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      ...(COMMUNITY_INTERNAL_SECRET ? { 'x-internal-secret': COMMUNITY_INTERNAL_SECRET } : {}),
-    },
-    body: JSON.stringify({ code, whatsapp }),
-  });
-  const json = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const msg =
-      (Array.isArray(json?.message) ? json.message.join(' ') : json?.message) ||
-      json?.error ||
-      `Erro ${res.status}`;
-    throw new Error(String(msg));
+  const bases = [COMMUNITY_API_URL, COMMUNITY_API_URL_FALLBACK].filter(Boolean);
+  if (!bases.length) throw new Error('COMMUNITY_API_URL não configurada');
+
+  /** @param {string} base */
+  const attempt = async (base) => {
+    const res = await fetch(`${base}/auth/whatsapp/confirm`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(COMMUNITY_INTERNAL_SECRET ? { 'x-internal-secret': COMMUNITY_INTERNAL_SECRET } : {}),
+      },
+      body: JSON.stringify({ code, whatsapp }),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const msg =
+        (Array.isArray(json?.message) ? json.message.join(' ') : json?.message) ||
+        json?.error ||
+        `Erro ${res.status}`;
+      const err = new Error(String(msg));
+      // @ts-ignore - attach metadata for fallback logic
+      err.status = res.status;
+      // @ts-ignore
+      err.base = base;
+      throw err;
+    }
+    return json;
+  };
+
+  /** @type {any[]} */
+  const errors = [];
+  for (let i = 0; i < bases.length; i++) {
+    const base = bases[i];
+    try {
+      const out = await attempt(base);
+      if (i > 0) {
+        console.warn('[wa-verify] confirm: fallback usado', { base });
+      }
+      return out;
+    } catch (err) {
+      errors.push(err);
+      const status = err?.status;
+      // Só tenta o próximo ambiente quando parecer "código não encontrado/expirado".
+      const shouldFallback =
+        i < bases.length - 1 &&
+        (status === 400 || status === 404 || /c[oó]digo/i.test(String(err?.message || '')));
+      if (!shouldFallback) throw err;
+    }
   }
-  return json;
+  throw errors[errors.length - 1] || new Error('Falha ao confirmar no backend');
 }
 
 async function sendEvolutionText(toDigits, text) {

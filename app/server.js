@@ -270,7 +270,7 @@ function classifyFinancingAnswers(q2, q3, q4, q5, q7) {
       key: 'indef100',
       comment: 'Possível viabilidade até 100% (a confirmar)',
       body:
-        'Resultado indefinido:\n✅ Em termos gerais o seu caso é difícil por ainda não ter o IRS, mas vale a pena tentar. Quando tiver o IRS, pode conseguir até uma aprovação de 100%!',
+        'Resultado viável (a confirmar):\n✅ Pelo facto de ter contrato de trabalho efetivo, o seu caso é viável para avançar com a análise.\n\n⚠️ No momento, por ainda não ter o IRS do ano anterior, a aprovação pode ficar mais difícil (e alguns bancos podem pedir que aguarde), mas você deve seguir avançando com o processo.\n\nAssim que tiver o IRS, envie para a gestora de crédito para reforçar o seu processo.\n\nVou enviar o link da gestora a seguir.',
     };
   }
   if (q4 === 'NAO' && q2 === 'SIM' && q3 === 'SIM') {
@@ -278,7 +278,7 @@ function classifyFinancingAnswers(q2, q3, q4, q5, q7) {
       key: 'indef90',
       comment: 'Possível viabilidade de 90% (a confirmar)',
       body:
-        'Resultado indefinido:\n✅ Em termos gerais o seu caso é difícil por ainda não ter o IRS, mas vale a pena tentar. Quando tiver o IRS, pode conseguir uma aprovação de 90% do valor da casa. E aí teria de dar 10% de entrada com capitais próprios.',
+        'Resultado viável (a confirmar):\n✅ Pelo facto de ter contrato de trabalho efetivo, o seu caso é viável para avançar com a análise.\n\n⚠️ No momento, por ainda não ter o IRS do ano anterior, a aprovação pode ficar mais difícil (e alguns bancos podem pedir que aguarde), mas você deve seguir avançando com o processo.\n\nAssim que tiver o IRS, envie para a gestora de crédito para reforçar o seu processo.\n\nQuando tiver o IRS, pode conseguir uma aprovação de 90% do valor da casa (com 10% de entrada em capitais próprios).\n\nVou enviar o link da gestora a seguir.',
     };
   }
   if (q2 === 'SIM' && q3 === 'SIM' && q4 === 'SIM' && q5 === 'NAO') {

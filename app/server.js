@@ -1,6 +1,4 @@
 const express = require('express');
-const fs = require('fs/promises');
-const path = require('path');
 
 const app = express();
 // Evolution envia payloads grandes (mensagens, metadados, mídia em base64); 1mb causava 413 no Nginx/Express
@@ -422,15 +420,6 @@ async function finishFinancingQuizWithOutcome(whatsappDigits, state, outcome) {
       quizSummary: summary,
       updatedAt: Date.now(),
     });
-    const exampleImagePath = await resolveFinancingExampleImagePath();
-    if (exampleImagePath) {
-      await sendEvolutionImageFromPath(
-        whatsappDigits,
-        exampleImagePath,
-        'Exemplo pratico de casos de financiamento',
-      );
-      await sleep(1200);
-    }
     await sendEvolutionText(
       whatsappDigits,
       'Deseja que o gestor(a) de crédito entre em contacto com você para atendimento e dar continuidade ao seu processo? Responda SIM ou NÃO.',
@@ -1203,71 +1192,6 @@ async function sendEvolutionText(toDigits, text, preferredInstance) {
     }
   }
   console.warn('[wa-verify] Evolution sendText falhou em todas as instâncias:', lastError);
-}
-
-async function sendEvolutionImageFromPath(toDigits, imagePath, caption = '', preferredInstance) {
-  const base = EVOLUTION_API_URL.replace(/\/$/, '');
-  const key = EVOLUTION_API_KEY;
-  const instances = resolveSendInstancesOrdered({
-    preferredInstance,
-    whatsappDigits: toDigits,
-  });
-  if (!base || !key) {
-    console.warn(
-      '[wa-verify] EVOLUTION_API_URL ou EVOLUTION_API_KEY ausentes; mídia não enviada.',
-    );
-    return;
-  }
-  const number = String(toDigits || '').replace(/\D/g, '');
-  if (!number) return;
-
-  const buf = await fs.readFile(imagePath);
-  const base64 = buf.toString('base64');
-  const fileName = path.basename(imagePath) || 'imagem.png';
-  const ext = path.extname(fileName).toLowerCase();
-  const mimeType = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : 'image/png';
-  let lastError = '';
-  for (const instance of instances) {
-    try {
-      const res = await fetch(`${base}/message/sendMedia/${instance}`, {
-        method: 'POST',
-        headers: { apikey: key, 'content-type': 'application/json' },
-        body: JSON.stringify({
-          number,
-          mediatype: 'image',
-          mimetype: mimeType,
-          caption: caption || '',
-          media: base64,
-          fileName,
-        }),
-      });
-      if (res.ok) return;
-      const body = await res.text().catch(() => '');
-      lastError = `${res.status} ${body}`.trim();
-    } catch (err) {
-      lastError = err?.message ? String(err.message) : 'erro de rede';
-    }
-  }
-  console.warn('[wa-verify] Evolution sendMedia falhou em todas as instâncias:', lastError);
-}
-
-async function resolveFinancingExampleImagePath() {
-  const envPath = String(process.env.FINANCING_EXAMPLE_IMAGE_PATH || process.env.CASA_IMAGE_PATH || '').trim();
-  const candidates = [
-    envPath,
-    path.resolve(process.cwd(), '../frontend/public/exemplo.jpeg'),
-    path.resolve(process.cwd(), '../../frontend/public/exemplo.jpeg'),
-    path.resolve(__dirname, '../../frontend/public/exemplo.jpeg'),
-  ].filter(Boolean);
-  for (const p of candidates) {
-    try {
-      await fs.access(p);
-      return p;
-    } catch {
-      // tenta próximo candidato
-    }
-  }
-  return '';
 }
 
 function flushWhatsappBuffer(whatsappDigits) {

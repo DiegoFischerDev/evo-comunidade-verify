@@ -321,7 +321,7 @@ const FINANCING_INVIABLE_RETRY_MESSAGE =
 const ATENDIMENTO_TRIGGER = normalizeText('atendimento');
 const ATENDIMENTO_PROMPT_TTL_MS = 24 * 60 * 60 * 1000;
 
-/** @type {Map<string, { uploadUrl: string, contactName: string, updatedAt: number }>} */
+/** @type {Map<string, { uploadUrl: string, contactName: string, quizSummary: string, updatedAt: number }>} */
 const atendimentoPromptStates = new Map();
 
 function getAtendimentoPromptState(whatsappDigits) {
@@ -417,6 +417,7 @@ async function finishFinancingQuizWithOutcome(whatsappDigits, state, outcome) {
     setAtendimentoPromptState(whatsappDigits, {
       uploadUrl,
       contactName: nomeLead,
+      quizSummary: summary,
       updatedAt: Date.now(),
     });
     await sendEvolutionText(
@@ -730,6 +731,35 @@ function extractGestoraName(gestora) {
   return null;
 }
 
+function extractGestoraWhatsapp(gestora) {
+  if (!gestora || typeof gestora !== 'object') return '';
+  const candidates = [
+    gestora.whatsapp,
+    gestora.whatsapp_number,
+    gestora.whatsappNumber,
+    gestora.phone,
+    gestora.phoneNumber,
+    gestora.telefone,
+    gestora.telephone,
+    gestora.mobile,
+    gestora.celular,
+  ];
+  for (const c of candidates) {
+    const digits = String(c || '').replace(/\D/g, '').trim();
+    if (digits) return digits;
+  }
+  return '';
+}
+
+function buildGestoraWhatsAppLink({ gestoraWhatsapp, leadName, quizSummary }) {
+  const digits = String(gestoraWhatsapp || '').replace(/\D/g, '').trim();
+  if (!digits) return '';
+  const nome = String(leadName || '').trim() || 'Cliente WhatsApp';
+  const resumo = String(quizSummary || '').trim() || 'não informado';
+  const text = `Ola, meu nome é ${nome}, e vim pela Rafa, minhas respostas ao questionario: ${resumo}`;
+  return `https://wa.me/${digits}?text=${encodeURIComponent(text)}`;
+}
+
 async function requestIaAppAtendimento(whatsappDigits) {
   const base = (process.env.IA_APP_BASE_URL || 'https://ia.rafaapelomundo.com/').replace(/\/$/, '');
   const secret = process.env.IA_APP_INTEGRATION_SECRET || '';
@@ -835,9 +865,11 @@ async function handleSolicitarAtendimento({
   whatsappDigits,
   contactName,
   uploadUrlHint,
+  quizSummaryHint,
 }) {
   const nome = String(contactName || '').trim() || 'Cliente WhatsApp';
   let uploadUrl = String(uploadUrlHint || '').trim();
+  const quizSummary = String(quizSummaryHint || '').trim();
 
   try {
     if (!uploadUrl) {
@@ -868,6 +900,21 @@ async function handleSolicitarAtendimento({
       : 'Perfeito! O seu atendimento foi solicitado e uma gestora foi atribuída. Ela vai entrar em contacto consigo o mais breve possível.';
     await sendEvolutionText(whatsappDigits, msgGestora);
     await sleep(1200);
+    const gestoraWhatsapp = extractGestoraWhatsapp(atendimento?.gestora);
+    const gestoraWaLink = buildGestoraWhatsAppLink({
+      gestoraWhatsapp,
+      leadName: nome,
+      quizSummary,
+    });
+    if (gestoraWaLink) {
+      await sendEvolutionText(
+        whatsappDigits,
+        'Use esse link para falar com ela diretamente pelo WhatsApp:',
+      );
+      await sleep(1200);
+      await sendEvolutionText(whatsappDigits, gestoraWaLink);
+      await sleep(1200);
+    }
     await sendEvolutionText(
       whatsappDigits,
       'Se quiser adiantar e já enviar os documentos necessários para avançar com o processo, pode fazer pelo link:',
@@ -910,6 +957,7 @@ async function handleAtendimentoPromptResponse(whatsappDigits, trimmed, pushName
       whatsappDigits,
       contactName: String(pushName || '').trim() || state.contactName || 'Cliente WhatsApp',
       uploadUrlHint: state.uploadUrl,
+      quizSummaryHint: state.quizSummary,
     });
     return true;
   }
@@ -1265,6 +1313,7 @@ async function evolutionWebhookHandler(req, res) {
           whatsappDigits: whatsapp,
           contactName: pushName || '',
           uploadUrlHint: getAtendimentoPromptState(whatsapp)?.uploadUrl || '',
+          quizSummaryHint: getAtendimentoPromptState(whatsapp)?.quizSummary || '',
         });
         anyBuffered = true;
         continue;

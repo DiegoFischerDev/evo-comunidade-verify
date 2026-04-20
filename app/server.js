@@ -19,6 +19,21 @@ const COMMUNITY_INTERNAL_SECRET = process.env.COMMUNITY_INTERNAL_SECRET || '';
 const EVOLUTION_API_URL = (process.env.EVOLUTION_API_URL || '').replace(/\/$/, '');
 const EVOLUTION_API_KEY = process.env.EVOLUTION_API_KEY || '';
 const EVOLUTION_INSTANCE = process.env.EVOLUTION_INSTANCE || 'comunidade';
+const EVOLUTION_INSTANCE_SECONDARY = process.env.EVOLUTION_INSTANCE_SECONDARY || '';
+
+function parseCsvSet(raw) {
+  return new Set(
+    String(raw || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
+  );
+}
+
+const CHATBOT_ALLOWED_INSTANCES = parseCsvSet(
+  process.env.EVOLUTION_CHATBOT_INSTANCES ||
+    [EVOLUTION_INSTANCE, EVOLUTION_INSTANCE_SECONDARY].filter(Boolean).join(','),
+);
 
 const LOG_WEBHOOK = process.env.LOG_WEBHOOK === '1' || process.env.LOG_WEBHOOK === 'true';
 
@@ -93,6 +108,9 @@ const creditQuizStates = new Map();
 const SEEN_MSG_ID_TTL_MS = Number(process.env.WA_SEEN_MSG_ID_TTL_MS || 15 * 60 * 1000);
 /** @type {Map<string, number>} */
 const seenInboundMessageIds = new Map();
+
+/** Mapeia último número -> instância de origem para responder no mesmo WhatsApp. */
+const lastInboundInstanceByWhatsapp = new Map();
 
 /**
  * @param {string | undefined} msgId
@@ -824,6 +842,37 @@ function normalizeWhatsappFromJid(remoteJid) {
   return String(remoteJid).split('@')[0].replace(/\D/g, '') || null;
 }
 
+function webhookInstanceName(body) {
+  const candidates = [body?.instance, body?.instanceName, body?.data?.instance, body?.data?.instanceName];
+  for (const c of candidates) {
+    const v = String(c || '').trim();
+    if (v) return v;
+  }
+  return '';
+}
+
+function resolveSendInstance({ preferredInstance, whatsappDigits }) {
+  const preferred = String(preferredInstance || '').trim();
+  if (preferred && CHATBOT_ALLOWED_INSTANCES.has(preferred)) return preferred;
+  const fromHistory = String(lastInboundInstanceByWhatsapp.get(String(whatsappDigits || '')) || '').trim();
+  if (fromHistory && CHATBOT_ALLOWED_INSTANCES.has(fromHistory)) return fromHistory;
+  const fallback = String(EVOLUTION_INSTANCE || 'comunidade').trim();
+  return fallback || 'comunidade';
+}
+
+function resolveSendInstancesOrdered({ preferredInstance, whatsappDigits }) {
+  const preferred = resolveSendInstance({ preferredInstance, whatsappDigits });
+  const pool = CHATBOT_ALLOWED_INSTANCES.size
+    ? Array.from(CHATBOT_ALLOWED_INSTANCES.values())
+    : [String(EVOLUTION_INSTANCE || 'comunidade').trim() || 'comunidade'];
+  const ordered = [preferred, ...pool.filter((v) => v !== preferred)];
+  const failoverRaw = String(process.env.EVOLUTION_FAILOVER_ENABLED || '1')
+    .trim()
+    .toLowerCase();
+  const failoverEnabled = !['0', 'false', 'off', 'no'].includes(failoverRaw);
+  return failoverEnabled ? ordered : ordered.slice(0, 1);
+}
+
 function extractCode(text) {
   const raw = String(text || '');
   const t = raw.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
@@ -844,7 +893,7 @@ function extractCode(text) {
   return null;
 }
 
-async function confirmOnCommunity({ code, whatsapp }) {
+async function confirmOnCommunity({ code, whatsapp, evolutionInstance }) {
   const bases = [COMMUNITY_API_URL, COMMUNITY_API_URL_FALLBACK].filter(Boolean);
   if (!bases.length) throw new Error('COMMUNITY_API_URL não configurada');
 
@@ -856,7 +905,11 @@ async function confirmOnCommunity({ code, whatsapp }) {
         'content-type': 'application/json',
         ...(COMMUNITY_INTERNAL_SECRET ? { 'x-internal-secret': COMMUNITY_INTERNAL_SECRET } : {}),
       },
-      body: JSON.stringify({ code, whatsapp }),
+      body: JSON.stringify({
+        code,
+        whatsapp,
+        evolutionInstance: evolutionInstance || undefined,
+      }),
     });
     const json = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -897,10 +950,13 @@ async function confirmOnCommunity({ code, whatsapp }) {
   throw errors[errors.length - 1] || new Error('Falha ao confirmar no backend');
 }
 
-async function sendEvolutionText(toDigits, text) {
+async function sendEvolutionText(toDigits, text, preferredInstance) {
   const base = EVOLUTION_API_URL.replace(/\/$/, '');
   const key = EVOLUTION_API_KEY;
-  const instance = EVOLUTION_INSTANCE || 'comunidade';
+  const instances = resolveSendInstancesOrdered({
+    preferredInstance,
+    whatsappDigits: toDigits,
+  });
   if (!base || !key) {
     console.warn(
       '[wa-verify] EVOLUTION_API_URL ou EVOLUTION_API_KEY ausentes; resposta automática não enviada.',
@@ -909,15 +965,22 @@ async function sendEvolutionText(toDigits, text) {
   }
   const number = String(toDigits || '').replace(/\D/g, '');
   if (!number) return;
-  const res = await fetch(`${base}/message/sendText/${instance}`, {
-    method: 'POST',
-    headers: { apikey: key, 'content-type': 'application/json' },
-    body: JSON.stringify({ number, text }),
-  });
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    console.warn('[wa-verify] Evolution sendText falhou:', res.status, body);
+  let lastError = '';
+  for (const instance of instances) {
+    try {
+      const res = await fetch(`${base}/message/sendText/${instance}`, {
+        method: 'POST',
+        headers: { apikey: key, 'content-type': 'application/json' },
+        body: JSON.stringify({ number, text }),
+      });
+      if (res.ok) return;
+      const body = await res.text().catch(() => '');
+      lastError = `${res.status} ${body}`.trim();
+    } catch (err) {
+      lastError = err?.message ? String(err.message) : 'erro de rede';
+    }
   }
+  console.warn('[wa-verify] Evolution sendText falhou em todas as instâncias:', lastError);
 }
 
 function flushWhatsappBuffer(whatsappDigits) {
@@ -934,14 +997,20 @@ function flushWhatsappBuffer(whatsappDigits) {
     return;
   }
   console.log('[wa-verify] flush: a confirmar', { whatsapp: whatsappDigits, code });
-  confirmOnCommunity({ code, whatsapp: whatsappDigits })
+  const evolutionInstance = resolveSendInstance({ whatsappDigits });
+  confirmOnCommunity({ code, whatsapp: whatsappDigits, evolutionInstance })
     .then(() => console.log('[wa-verify] conta confirmada no backend', { whatsapp: whatsappDigits }))
     .catch((err) => console.error('[wa-verify] confirm failed:', err?.message || err));
 }
 
-function bufferIncomingMessage(whatsappDigits, text) {
+function bufferIncomingMessage(whatsappDigits, text, instanceName) {
   const trimmed = text && String(text).trim();
   if (!trimmed) return false;
+
+  const inst = String(instanceName || '').trim();
+  if (inst) {
+    lastInboundInstanceByWhatsapp.set(whatsappDigits, inst);
+  }
 
   let buf = incomingBuffers.get(whatsappDigits);
   if (!buf) {
@@ -974,11 +1043,19 @@ async function evolutionWebhookHandler(req, res) {
       console.log('[wa-verify] webhook raw event=', req.body?.event, 'keys=', req.body?.data ? Object.keys(req.body.data) : []);
     }
 
+    const instanceName = webhookInstanceName(req.body);
+    if (instanceName && CHATBOT_ALLOWED_INSTANCES.size > 0 && !CHATBOT_ALLOWED_INSTANCES.has(instanceName)) {
+      return res.json({ ok: true, ignored: true, reason: 'instance-not-allowed', instance: instanceName });
+    }
+
     const parts = listIncomingMessageParts(req.body);
     let anyBuffered = false;
     for (const { remoteJid, text, pushName, msgId } of parts) {
       const whatsapp = normalizeWhatsappFromJid(remoteJid);
       if (!whatsapp) continue;
+      if (instanceName) {
+        lastInboundInstanceByWhatsapp.set(whatsapp, instanceName);
+      }
       const trimmed = text && String(text).trim();
       if (!trimmed) continue;
 
@@ -1024,7 +1101,7 @@ async function evolutionWebhookHandler(req, res) {
         }
       }
 
-      if (bufferIncomingMessage(whatsapp, trimmed)) anyBuffered = true;
+      if (bufferIncomingMessage(whatsapp, trimmed, instanceName)) anyBuffered = true;
     }
 
     if (!anyBuffered) {

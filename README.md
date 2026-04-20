@@ -18,7 +18,10 @@ Projeto simples para **confirmar contas via WhatsApp** usando a **Evolution API*
 ### Variáveis importantes (.env na VPS)
 
 - `EVOLUTION_API_KEY`: chave para usar a Evolution
-- `EVOLUTION_INSTANCE`: nome da instância (ex.: `comunidade`)
+- `EVOLUTION_INSTANCE`: instância principal (ex.: `comunidade`)
+- `EVOLUTION_INSTANCE_SECONDARY`: instância secundária (opcional, ex.: `comunidade-2`)
+- `EVOLUTION_CHATBOT_INSTANCES`: lista CSV de instâncias permitidas para o chatbot (ex.: `comunidade,comunidade-2`). Se vazio, usa principal + secundária.
+- `EVOLUTION_FAILOVER_ENABLED`: `1` (padrão) para tentar envio automático na instância reserva quando a principal falhar.
 - `WEBHOOK_PUBLIC_URL`: URL pública do receiver (ex.: `https://wa-verify.seudominio.com/webhook/evolution`)
 - `COMMUNITY_API_URL`: URL do backend da Comunidade (ex.: `https://api-comunidade...`)
 - `COMMUNITY_INTERNAL_SECRET`: segredo para autenticar chamadas internas

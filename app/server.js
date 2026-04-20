@@ -1224,7 +1224,7 @@ async function sendEvolutionImageFromPath(toDigits, imagePath, caption = '', pre
         headers: { apikey: key, 'content-type': 'application/json' },
         body: JSON.stringify({
           number,
-          mediatype: 'Image',
+          mediatype: 'image',
           mimetype: 'image/png',
           caption: caption || '',
           media: base64,

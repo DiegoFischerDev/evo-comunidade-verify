@@ -315,16 +315,35 @@ function classifyFinancingAnswers(q2, q3, q4, q5, q7) {
   };
 }
 
-/** Mensagens após criar o lead (inclui link de upload); fim do flow do quiz. */
-const FINANCING_FOLLOWUP_MESSAGES = [
-  'Para receber o contacto do gestor de crédito que indicamos, bem como a lista de documentos necessários, pedimos que confirme o seu e-mail no link a seguir:',
-  null,
-  'Pode usar este link para enviar os documentos e iniciar a sua análise gratuita com o seu gestor.',
-  'Se ficou alguma dúvida, deixe aqui que, assim que eu puder, respondo.',
-];
-
 const FINANCING_INVIABLE_RETRY_MESSAGE =
   'Se as condições mudarem e quiser responder ao questionário novamente e avançar com o processo, digite QUESTIONARIO e iniciamos outra análise.';
+
+const ATENDIMENTO_TRIGGER = normalizeText('atendimento');
+const ATENDIMENTO_PROMPT_TTL_MS = 24 * 60 * 60 * 1000;
+
+/** @type {Map<string, { uploadUrl: string, contactName: string, updatedAt: number }>} */
+const atendimentoPromptStates = new Map();
+
+function getAtendimentoPromptState(whatsappDigits) {
+  const s = atendimentoPromptStates.get(whatsappDigits);
+  if (!s) return null;
+  if (Date.now() - s.updatedAt > ATENDIMENTO_PROMPT_TTL_MS) {
+    atendimentoPromptStates.delete(whatsappDigits);
+    return null;
+  }
+  return s;
+}
+
+function setAtendimentoPromptState(whatsappDigits, state) {
+  atendimentoPromptStates.set(whatsappDigits, {
+    ...state,
+    updatedAt: Date.now(),
+  });
+}
+
+function clearAtendimentoPromptState(whatsappDigits) {
+  atendimentoPromptStates.delete(whatsappDigits);
+}
 
 async function startFinancingQuiz(whatsappDigits, pushName) {
   const displayFirstName = firstNameFromPushName(pushName);
@@ -363,7 +382,7 @@ async function startFinancingQuiz(whatsappDigits, pushName) {
 }
 
 /**
- * Envia resultado do quiz, cria lead na API e mensagens de follow-up.
+ * Envia resultado do quiz, cria lead na API e inicia decisão de atendimento.
  * @param {string} whatsappDigits
  * @param {CreditQuizState} state
  * @param {{ key: string, comment: string, body: string }} outcome
@@ -394,15 +413,16 @@ async function finishFinancingQuizWithOutcome(whatsappDigits, state, outcome) {
       clearCreditQuizState(whatsappDigits);
       return;
     }
-    for (let i = 0; i < FINANCING_FOLLOWUP_MESSAGES.length; i++) {
-      const line = FINANCING_FOLLOWUP_MESSAGES[i];
-      if (line === null) {
-        await sendEvolutionText(whatsappDigits, String(data.upload_url));
-      } else {
-        await sendEvolutionText(whatsappDigits, line);
-      }
-      await sleep(1200);
-    }
+    const uploadUrl = String(data.upload_url || '').trim();
+    setAtendimentoPromptState(whatsappDigits, {
+      uploadUrl,
+      contactName: nomeLead,
+      updatedAt: Date.now(),
+    });
+    await sendEvolutionText(
+      whatsappDigits,
+      'Deseja que o gestor(a) de crédito entre em contacto com você para atendimento e dar continuidade ao seu processo? Responda SIM ou NÃO.',
+    );
     clearCreditQuizState(whatsappDigits);
   } catch (err) {
     const detail = err?.message || String(err);
@@ -694,6 +714,58 @@ async function patchIaAppLeadComment(whatsappDigits, comentario) {
   throw new Error(String(apiMsg).trim() || `Erro HTTP ${res.status}`);
 }
 
+function extractGestoraName(gestora) {
+  if (!gestora || typeof gestora !== 'object') return null;
+  const candidates = [
+    gestora.nome,
+    gestora.name,
+    gestora.displayName,
+    gestora.fullName,
+    gestora.firstName,
+  ];
+  for (const c of candidates) {
+    const v = String(c || '').trim();
+    if (v) return v;
+  }
+  return null;
+}
+
+async function requestIaAppAtendimento(whatsappDigits) {
+  const base = (process.env.IA_APP_BASE_URL || 'https://ia.rafaapelomundo.com/').replace(/\/$/, '');
+  const secret = process.env.IA_APP_INTEGRATION_SECRET || '';
+  if (!secret) {
+    throw new Error('Integração não configurada no servidor.');
+  }
+
+  const res = await fetch(`${base}/api/integration/leads/request-atendimento`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'X-Integration-Secret': secret,
+    },
+    body: JSON.stringify({ whatsapp: whatsappDigits }),
+  });
+  const raw = await res.text();
+  let json = {};
+  try {
+    json = raw ? JSON.parse(raw) : {};
+  } catch {
+    json = {};
+  }
+  const ok = res.status === 200 && json.ok === true;
+  if (ok) return json;
+
+  const apiMsg =
+    (Array.isArray(json?.message) ? json.message.join(' ') : json?.message) ||
+    json?.error ||
+    (raw && raw.length < 800 ? raw.trim() : '') ||
+    `Erro HTTP ${res.status}`;
+  const err = new Error(String(apiMsg).trim() || `Erro HTTP ${res.status}`);
+  // @ts-ignore
+  err.status = res.status;
+  throw err;
+}
+
 async function sendCreateAccountFlow({ whatsappDigits, contactName }) {
   const nome = String(contactName || '').trim() || 'Cliente WhatsApp';
 
@@ -757,6 +829,97 @@ async function sendCreditHelpFlow({ whatsappDigits, contactName }) {
   }
 
   return { ok: true, sent: messages.length };
+}
+
+async function handleSolicitarAtendimento({
+  whatsappDigits,
+  contactName,
+  uploadUrlHint,
+}) {
+  const nome = String(contactName || '').trim() || 'Cliente WhatsApp';
+  let uploadUrl = String(uploadUrlHint || '').trim();
+
+  try {
+    if (!uploadUrl) {
+      try {
+        const leadData = await createIaAppLead(whatsappDigits, nome);
+        uploadUrl = String(leadData?.upload_url || '').trim();
+      } catch {
+        // segue mesmo sem uploadUrl (tentamos link genérico)
+      }
+    }
+
+    let atendimento;
+    try {
+      atendimento = await requestIaAppAtendimento(whatsappDigits);
+    } catch (err) {
+      if (err?.status === 404) {
+        const leadData = await createIaAppLead(whatsappDigits, nome);
+        uploadUrl = uploadUrl || String(leadData?.upload_url || '').trim();
+        atendimento = await requestIaAppAtendimento(whatsappDigits);
+      } else {
+        throw err;
+      }
+    }
+
+    const gestoraNome = extractGestoraName(atendimento?.gestora);
+    const msgGestora = gestoraNome
+      ? `Perfeito! A gestora ${gestoraNome} foi atribuída ao seu atendimento e vai entrar em contacto consigo o mais breve possível.`
+      : 'Perfeito! O seu atendimento foi solicitado e uma gestora foi atribuída. Ela vai entrar em contacto consigo o mais breve possível.';
+    await sendEvolutionText(whatsappDigits, msgGestora);
+    await sleep(1200);
+    await sendEvolutionText(
+      whatsappDigits,
+      'Se quiser adiantar e já enviar os documentos necessários para avançar com o processo, pode fazer pelo link:',
+    );
+    await sleep(1200);
+    if (uploadUrl) {
+      await sendEvolutionText(whatsappDigits, uploadUrl);
+    } else {
+      const base = (process.env.IA_APP_BASE_URL || 'https://ia.rafaapelomundo.com/').replace(/\/$/, '');
+      await sendEvolutionText(whatsappDigits, `${base}/credito`);
+    }
+    clearAtendimentoPromptState(whatsappDigits);
+    return { ok: true };
+  } catch (err) {
+    const detail = err?.message || String(err);
+    console.warn('[wa-verify] atendimento: falhou', { whatsapp: whatsappDigits, detail });
+    await sendEvolutionText(
+      whatsappDigits,
+      'Não consegui solicitar o atendimento agora. Tente novamente em alguns minutos escrevendo ATENDIMENTO.',
+    );
+    return { ok: false, error: detail };
+  }
+}
+
+async function handleAtendimentoPromptResponse(whatsappDigits, trimmed, pushName) {
+  const state = getAtendimentoPromptState(whatsappDigits);
+  if (!state) return false;
+
+  const ans = parseSimNao(trimmed);
+  if (!ans) {
+    await sendEvolutionText(
+      whatsappDigits,
+      'Não entendi. Por favor responda apenas com SIM ou NÃO.',
+    );
+    return true;
+  }
+
+  if (ans === 'SIM') {
+    await handleSolicitarAtendimento({
+      whatsappDigits,
+      contactName: String(pushName || '').trim() || state.contactName || 'Cliente WhatsApp',
+      uploadUrlHint: state.uploadUrl,
+    });
+    return true;
+  }
+
+  clearAtendimentoPromptState(whatsappDigits);
+  await sendEvolutionText(
+    whatsappDigits,
+    'Perfeito! Boa sorte no seu processo. Se quiser tentar novamente, basta escrever ATENDIMENTO.',
+  );
+  return true;
 }
 
 /**
@@ -1068,6 +1231,7 @@ async function evolutionWebhookHandler(req, res) {
       const normalized = normalizeText(maybeUrlDecodeInboundText(trimmed));
       if (FINANCING_QUIZ_TRIGGERS.has(normalized) || /^questionario\b/.test(normalized)) {
         clearCreditQuizState(whatsapp);
+        clearAtendimentoPromptState(whatsapp);
         startFinancingQuiz(whatsapp, pushName || '').catch((err) => {
           console.warn('[wa-verify] financing-quiz: erro ao iniciar', err?.message || err);
         });
@@ -1077,6 +1241,7 @@ async function evolutionWebhookHandler(req, res) {
 
       if (normalizeText(trimmed) === CREDIT_HELP_TRIGGER) {
         clearCreditQuizState(whatsapp);
+        clearAtendimentoPromptState(whatsapp);
         sendCreditHelpFlow({ whatsappDigits: whatsapp, contactName: pushName }).catch((err) => {
           console.warn('[wa-verify] credit-help: erro ao enviar flow:', err?.message || err);
         });
@@ -1086,8 +1251,20 @@ async function evolutionWebhookHandler(req, res) {
 
       if (normalizeText(trimmed) === CREATE_ACCOUNT_TRIGGER) {
         clearCreditQuizState(whatsapp);
+        clearAtendimentoPromptState(whatsapp);
         sendCreateAccountFlow({ whatsappDigits: whatsapp, contactName: pushName }).catch((err) => {
           console.warn('[wa-verify] create-account: exceção:', err?.message || err);
+        });
+        anyBuffered = true;
+        continue;
+      }
+
+      if (normalized === ATENDIMENTO_TRIGGER || /^atendimento\b/.test(normalized)) {
+        clearCreditQuizState(whatsapp);
+        await handleSolicitarAtendimento({
+          whatsappDigits: whatsapp,
+          contactName: pushName || '',
+          uploadUrlHint: getAtendimentoPromptState(whatsapp)?.uploadUrl || '',
         });
         anyBuffered = true;
         continue;
@@ -1096,6 +1273,18 @@ async function evolutionWebhookHandler(req, res) {
       if (getCreditQuizState(whatsapp)) {
         const consumed = await tryHandleFinancingQuiz(whatsapp, trimmed, pushName || '');
         if (consumed) {
+          anyBuffered = true;
+          continue;
+        }
+      }
+
+      if (getAtendimentoPromptState(whatsapp)) {
+        const consumedAtendimento = await handleAtendimentoPromptResponse(
+          whatsapp,
+          trimmed,
+          pushName || '',
+        );
+        if (consumedAtendimento) {
           anyBuffered = true;
           continue;
         }

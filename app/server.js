@@ -77,7 +77,6 @@ function maybeUrlDecodeInboundText(text) {
 const CREDIT_HELP_TRIGGER = normalizeText('Ola, preciso de ajuda em relação ao contato da gestora de crédito');
 
 const CREATE_ACCOUNT_TRIGGER = normalizeText('criar conta');
-const WANT_HOUSE_TRIGGER = normalizeText('quero casa');
 
 const FINANCING_QUIZ_TRIGGERS = new Set([
   normalizeText('Ola, quero saber se consigo financiar uma casa em Portugal'),
@@ -423,6 +422,15 @@ async function finishFinancingQuizWithOutcome(whatsappDigits, state, outcome) {
       quizSummary: summary,
       updatedAt: Date.now(),
     });
+    const exampleImagePath = await resolveFinancingExampleImagePath();
+    if (exampleImagePath) {
+      await sendEvolutionImageFromPath(
+        whatsappDigits,
+        exampleImagePath,
+        'Exemplo pratico de casos de financiamento',
+      );
+      await sleep(1200);
+    }
     await sendEvolutionText(
       whatsappDigits,
       'Deseja que o gestor(a) de crédito entre em contacto com você para atendimento e dar continuidade ao seu processo? Responda SIM ou NÃO.',
@@ -1216,6 +1224,8 @@ async function sendEvolutionImageFromPath(toDigits, imagePath, caption = '', pre
   const buf = await fs.readFile(imagePath);
   const base64 = buf.toString('base64');
   const fileName = path.basename(imagePath) || 'imagem.png';
+  const ext = path.extname(fileName).toLowerCase();
+  const mimeType = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : 'image/png';
   let lastError = '';
   for (const instance of instances) {
     try {
@@ -1225,7 +1235,7 @@ async function sendEvolutionImageFromPath(toDigits, imagePath, caption = '', pre
         body: JSON.stringify({
           number,
           mediatype: 'image',
-          mimetype: 'image/png',
+          mimetype: mimeType,
           caption: caption || '',
           media: base64,
           fileName,
@@ -1241,13 +1251,13 @@ async function sendEvolutionImageFromPath(toDigits, imagePath, caption = '', pre
   console.warn('[wa-verify] Evolution sendMedia falhou em todas as instâncias:', lastError);
 }
 
-async function resolveCasaImagePath() {
-  const envPath = String(process.env.CASA_IMAGE_PATH || '').trim();
+async function resolveFinancingExampleImagePath() {
+  const envPath = String(process.env.FINANCING_EXAMPLE_IMAGE_PATH || process.env.CASA_IMAGE_PATH || '').trim();
   const candidates = [
     envPath,
-    path.resolve(process.cwd(), '../frontend/public/casa.png'),
-    path.resolve(process.cwd(), '../../frontend/public/casa.png'),
-    path.resolve(__dirname, '../../frontend/public/casa.png'),
+    path.resolve(process.cwd(), '../frontend/public/exemplo.jpeg'),
+    path.resolve(process.cwd(), '../../frontend/public/exemplo.jpeg'),
+    path.resolve(__dirname, '../../frontend/public/exemplo.jpeg'),
   ].filter(Boolean);
   for (const p of candidates) {
     try {
@@ -1369,34 +1379,6 @@ async function evolutionWebhookHandler(req, res) {
         sendCreateAccountFlow({ whatsappDigits: whatsapp, contactName: pushName }).catch((err) => {
           console.warn('[wa-verify] create-account: exceção:', err?.message || err);
         });
-        anyBuffered = true;
-        continue;
-      }
-
-      if (normalized === WANT_HOUSE_TRIGGER || /^quero casa\b/.test(normalized)) {
-        try {
-          const imagePath = await resolveCasaImagePath();
-          if (!imagePath) {
-            await sendEvolutionText(
-              whatsapp,
-              'Não consegui localizar a imagem de teste (casa.png).',
-            );
-          } else {
-            await sendEvolutionImageFromPath(
-              whatsapp,
-              imagePath,
-              '🏠 Aqui está a imagem de teste da casa.',
-              instanceName,
-            );
-          }
-        } catch (err) {
-          console.warn('[wa-verify] want-house: falha ao enviar imagem', err?.message || err);
-          await sendEvolutionText(
-            whatsapp,
-            'Não consegui enviar a imagem agora. Tente novamente em alguns instantes.',
-            instanceName,
-          );
-        }
         anyBuffered = true;
         continue;
       }

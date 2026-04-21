@@ -366,6 +366,61 @@ function classifyForeignInvestorAnswers(q3, capitalOk) {
 const FINANCING_INVIABLE_RETRY_MESSAGE =
   'Se as condições mudarem e quiser responder ao questionário novamente e avançar com o processo, digite QUESTIONARIO e iniciamos outra análise.';
 
+/** Ilustração para resultado ~100% (casa 200 000 €). */
+const FINANCING_EXAMPLE_100_PCT = `Exemplo prático (ilustrativo)
+
+Casa: 200 000 €
+Financiamento: 100%
+Prazo: 35 anos
+Prestação com seguros: 750 €
+Custos no dia da escritura: 2 200 €
+• Imposto sobre o crédito: 1 200 €
+• Escritura: 1 000 €`;
+
+/** Ilustração para resultado com entrada (~90% ou custos na escritura). */
+const FINANCING_EXAMPLE_90_PCT = `Exemplo prático (ilustrativo)
+
+Casa: 200 000 €
+Financiamento: 90%
+Prazo: 35 anos
+Prestação com seguros: 723 €
+Custos no dia da escritura: 27 000 €
+• Entrada: 20 000 €
+• IMT: 3 540 €
+• Imposto sobre o crédito: 1 100 €
+• Imposto sobre a compra: 1 600 €
+• Escritura: 1 000 €`;
+
+/**
+ * Escolhe o exemplo alinhado ao resultado do questionário (valores indicativos).
+ * @param {string} outcomeKey
+ * @returns {{ intro?: string, body: string }}
+ */
+function financingPracticalExampleForOutcome(outcomeKey) {
+  switch (outcomeKey) {
+    case '100':
+      return { body: FINANCING_EXAMPLE_100_PCT };
+    case '90':
+      return { body: FINANCING_EXAMPLE_90_PCT };
+    case '80':
+    case 'foreign-80':
+      return {
+        intro:
+          'Para o seu perfil (financiamento na ordem dos 80%, entrada ~20%), segue um exemplo ilustrativo com a mesma casa de referência — valores finais dependem do banco e da simulação:',
+        body: FINANCING_EXAMPLE_90_PCT,
+      };
+    case 'indef-sem-ctef-10':
+    case 'fallback':
+      return {
+        intro:
+          'Segue um exemplo ilustrativo com entrada e custos na escritura (valores indicativos):',
+        body: FINANCING_EXAMPLE_90_PCT,
+      };
+    default:
+      return { body: FINANCING_EXAMPLE_90_PCT };
+  }
+}
+
 const ATENDIMENTO_TRIGGER = normalizeText('atendimento');
 const ATENDIMENTO_PROMPT_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -466,6 +521,15 @@ async function finishFinancingQuizWithOutcome(whatsappDigits, state, outcome) {
       quizSummary: summary,
       updatedAt: Date.now(),
     });
+
+    const example = financingPracticalExampleForOutcome(outcome.key);
+    if (example.intro) {
+      await sendEvolutionText(whatsappDigits, example.intro);
+      await sleep(800);
+    }
+    await sendEvolutionText(whatsappDigits, example.body);
+    await sleep(1200);
+
     await sendEvolutionText(
       whatsappDigits,
       'Deseja que o gestor(a) de crédito entre em contacto com você para atendimento e dar continuidade ao seu processo? Responda SIM ou NÃO.',

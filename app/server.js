@@ -88,9 +88,27 @@ const QUIZ_STATE_TTL_MS = 24 * 60 * 60 * 1000;
 
 /**
  * @typedef {{
- *   step: 'AWAIT_MARITAL' | 'AWAIT_Q2' | 'AWAIT_Q3' | 'AWAIT_Q7' | 'AWAIT_Q4' | 'AWAIT_Q5' | 'AWAIT_CAPITALS',
+ *   step:
+ *     | 'AWAIT_RESIDENCE'
+ *     | 'AWAIT_MARITAL'
+ *     | 'AWAIT_Q2'
+ *     | 'AWAIT_Q3'
+ *     | 'AWAIT_Q7'
+ *     | 'AWAIT_Q4'
+ *     | 'AWAIT_CAPITALS'
+ *     | 'AWAIT_FOREIGN_CTEF'
+ *     | 'AWAIT_FOREIGN_CAPITAL',
+ *   track: 'resident' | 'foreign' | null,
  *   mode: 'casado' | 'solteiro' | null,
- *   answers: { q2?: 'SIM' | 'NAO'; q3?: 'SIM' | 'NAO'; q7?: 'SIM' | 'NAO'; q4?: 'SIM' | 'NAO'; q5?: 'SIM' | 'NAO'; capitalOk?: 'SIM' | 'NAO'; capitalPercent?: 10 | 20 },
+ *   answers: {
+ *     residencePt?: 'SIM' | 'NAO';
+ *     q2?: 'SIM' | 'NAO';
+ *     q3?: 'SIM' | 'NAO';
+ *     q7?: 'SIM' | 'NAO';
+ *     q5?: 'SIM' | 'NAO';
+ *     capitalOk?: 'SIM' | 'NAO';
+ *     capitalPercent?: 10 | 20;
+ *   },
  *   displayFirstName: string,
  *   fullPushName: string,
  *   pendingCapitalPercent?: 10 | 20,
@@ -186,23 +204,39 @@ function parseSimNao(text) {
   return null;
 }
 
-/** @param {'casado' | 'solteiro'} mode @param {2|3|4|5} n */
+/**
+ * Perguntas do fluxo residente (já mora em PT): 3=AR/CC, 4=CTEF, 5=idade (sem pergunta de IRS).
+ * @param {'casado' | 'solteiro'} mode
+ * @param {2 | 3 | 4} n índice interno (q2/q3/q5)
+ */
 function financingQuestion(mode, n) {
   if (mode === 'casado') {
     if (n === 2)
-      return '2- Pelo menos um dos dois já possui cartão de cidadão ou título de residência no formato de cartão?\nSIM ou NÃO';
+      return '3- Pelo menos um dos dois já possui cartão de cidadão ou título de residência no formato de cartão?\nSIM ou NÃO';
     if (n === 3)
-      return '3- Pelo menos um dos dois possui contrato de trabalho efetivo?\nSIM ou NÃO';
-    if (n === 4)
-      return '4- Pelo menos um dos dois possui declaração de imposto de renda do ano anterior?\nSIM ou NÃO';
+      return '4- Pelo menos um dos dois possui contrato de trabalho efetivo?\nSIM ou NÃO';
     return '5- Ambos têm menos de 35 anos?\nSIM ou NÃO';
   }
   if (n === 2)
-    return '2- Você possui cartão de cidadão ou título de residência no formato de cartão?\nSIM ou NÃO';
-  if (n === 3) return '3- Você possui contrato de trabalho efetivo?\nSIM ou NÃO';
-  if (n === 4)
-    return '4- Você possui declaração de imposto de renda do ano anterior?\nSIM ou NÃO';
+    return '3- Você possui cartão de cidadão ou título de residência no formato de cartão?\nSIM ou NÃO';
+  if (n === 3) return '4- Você possui contrato de trabalho efetivo?\nSIM ou NÃO';
   return '5- Tem menos de 35 anos?\nSIM ou NÃO';
+}
+
+/** Contrato efetivo — investidor que ainda não mora em PT (após estado civil). */
+function financingForeignCtefQuestion(mode) {
+  if (mode === 'casado') {
+    return '3- Pelo menos um dos dois possui contrato de trabalho efetivo?\nSIM ou NÃO';
+  }
+  return '3- Você possui contrato de trabalho efetivo?\nSIM ou NÃO';
+}
+
+/** Entrada 20% — regra habitual para financiamento a investidor estrangeiro (~80% do valor). */
+function financingForeignCapitalQuestion(mode) {
+  if (mode === 'casado') {
+    return '4- Como investidor estrangeiro, os bancos em Portugal costumam financiar cerca de 80% do valor do imóvel. Teriam 20% do valor em capitais próprios para entrada?\nSIM ou NÃO';
+  }
+  return '4- Como investidor estrangeiro, os bancos em Portugal costumam financiar cerca de 80% do valor do imóvel. Teria 20% do valor em capitais próprios para entrada?\nSIM ou NÃO';
 }
 
 /** Pergunta extra quando a resposta à 3 é NÃO (sem contrato de trabalho efetivo). */
@@ -222,35 +256,39 @@ function financingCapitalQuestion(mode, percent) {
   return `6- Você teria ${p} do valor da casa em capitais próprios para dar de entrada?\nSIM ou NÃO`;
 }
 
-function computeRequiredCapitalPercent(q2, q3, q4, q5) {
-  // Investidor estrangeiro (sem AR/CC): normalmente exige 20% de entrada
-  if (q2 === 'NAO' && q3 === 'SIM' && q4 === 'SIM') return 20;
-  // Casos com 10% de entrada (resultado 90% ou indefinido 90% por falta de IRS)
-  if (q2 === 'SIM' && q3 === 'SIM' && q4 === 'SIM' && q5 === 'NAO') return 10;
-  if (q4 === 'NAO' && q2 === 'SIM' && q3 === 'SIM') return 10;
+function computeRequiredCapitalPercent(q2, q3, q5) {
+  if (q2 === 'NAO' && q3 === 'SIM') return 20;
+  if (q2 === 'SIM' && q3 === 'SIM' && q5 === 'NAO') return 10;
   return null;
 }
 
 function buildQuizSummary(state) {
   const a = state.answers || {};
   const modeLabel = state.mode === 'casado' ? 'Casado' : state.mode === 'solteiro' ? 'Solteiro' : 'Indefinido';
-  const parts = [modeLabel];
+  const parts = [];
+  if (a.residencePt) parts.push(a.residencePt === 'SIM' ? 'mora em PT' : 'não mora em PT');
+  if (state.track === 'foreign') {
+    parts.push('investidor estrangeiro', modeLabel);
+    if (a.q3) parts.push(a.q3 === 'SIM' ? 'tem CTEF' : 'não tem CTEF');
+    if (a.capitalOk) parts.push(a.capitalOk === 'SIM' ? '20% entrada' : 'sem 20% entrada');
+    return parts.join(', ');
+  }
+  parts.push(modeLabel);
   if (a.q2) parts.push(a.q2 === 'SIM' ? 'tem AR/CC' : 'não tem AR/CC');
   if (a.q3) parts.push(a.q3 === 'SIM' ? 'tem CTEF' : 'não tem CTEF');
-  if (a.q4) parts.push(a.q4 === 'SIM' ? 'tem IRS' : 'não tem IRS');
   if (a.q5) parts.push(a.q5 === 'SIM' ? 'menos de 35 anos' : '35+ anos');
   if (a.capitalPercent) parts.push(`tem ${a.capitalPercent}%`);
   return parts.join(', ');
 }
 
 /**
- * @param {'SIM'|'NAO'} q2
- * @param {'SIM'|'NAO'} q3
- * @param {'SIM'|'NAO'} q4
- * @param {'SIM'|'NAO'} q5
- * @param {'SIM'|'NAO'|undefined} q7 só preenchido quando q3 é NÃO (pergunta 7)
+ * Classificação do fluxo residente (mora em PT), sem pergunta de IRS.
+ * @param {'SIM'|'NAO'} q2 AR/CC
+ * @param {'SIM'|'NAO'} q3 CTEF
+ * @param {'SIM'|'NAO'} q5 menos de 35 anos
+ * @param {'SIM'|'NAO'|undefined} q7 só quando q3 é NÃO (pergunta 7, ~10% entrada)
  */
-function classifyFinancingAnswers(q2, q3, q4, q5, q7) {
+function classifyFinancingAnswers(q2, q3, q5, q7) {
   if (q3 === 'NAO' && q7 !== 'SIM') {
     return {
       key: 'inviavel',
@@ -267,7 +305,7 @@ function classifyFinancingAnswers(q2, q3, q4, q5, q7) {
         'Resultado indefinido:\n✅ Sem contrato de trabalho efetivo, os bancos tendem a ser mais exigentes; ao indicar que dispõe de cerca de 10% em capitais próprios para entrada, o seu caso deixa de ser automaticamente inviável e pode haver margem para analisar soluções com um gestor de crédito. Não é garantia de aprovação, mas vale reunir a documentação e pedir uma avaliação personalizada.',
     };
   }
-  if (q2 === 'SIM' && q3 === 'SIM' && q4 === 'SIM' && q5 === 'SIM') {
+  if (q2 === 'SIM' && q3 === 'SIM' && q5 === 'SIM') {
     return {
       key: '100',
       comment: 'Possível viabilidade de 100%',
@@ -275,31 +313,15 @@ function classifyFinancingAnswers(q2, q3, q4, q5, q7) {
         'Resultado 100%:\n✅ Em termos gerais, você tem viabilidade para aprovação de financiamento de 100% do valor da casa!',
     };
   }
-  if (q2 === 'NAO' && q3 === 'SIM' && q4 === 'SIM') {
+  if (q2 === 'NAO' && q3 === 'SIM') {
     return {
       key: '80',
       comment: 'Possível viabilidade de 80%',
       body:
-        'Resultado 80%:\n✅ Em termos gerais, você tem viabilidade para aprovação de financiamento de 80% do valor da casa. Você pode financiar como investidor estrangeiro. Nesse caso teria de dar 20% de entrada com capitais próprios.',
+        'Resultado 80%:\n✅ Em termos gerais, você tem viabilidade para aprovação de financiamento de cerca de 80% do valor da casa. Nesse cenário costuma ser necessário cerca de 20% de entrada com capitais próprios (regra habitual quando ainda não há cartão de residência no formato de cartão).',
     };
   }
-  if (q4 === 'NAO' && q2 === 'SIM' && q3 === 'SIM' && q5 === 'SIM') {
-    return {
-      key: 'indef100',
-      comment: 'Possível viabilidade até 100% (a confirmar)',
-      body:
-        'Resultado viável (a confirmar):\n✅ Pelo facto de ter contrato de trabalho efetivo, o seu caso é viável para avançar com a análise.\n\n⚠️ No momento, por ainda não ter o IRS do ano anterior, a aprovação pode ficar mais difícil (e alguns bancos podem pedir que aguarde), mas você deve seguir avançando com o processo.\n\nAssim que tiver o IRS, envie para a gestora de crédito para reforçar o seu processo.\n\nVou enviar o link da gestora a seguir.',
-    };
-  }
-  if (q4 === 'NAO' && q2 === 'SIM' && q3 === 'SIM') {
-    return {
-      key: 'indef90',
-      comment: 'Possível viabilidade de 90% (a confirmar)',
-      body:
-        'Resultado viável (a confirmar):\n✅ Pelo facto de ter contrato de trabalho efetivo, o seu caso é viável para avançar com a análise.\n\n⚠️ No momento, por ainda não ter o IRS do ano anterior, a aprovação pode ficar mais difícil (e alguns bancos podem pedir que aguarde), mas você deve seguir avançando com o processo.\n\nAssim que tiver o IRS, envie para a gestora de crédito para reforçar o seu processo.\n\nQuando tiver o IRS, pode conseguir uma aprovação de 90% do valor da casa (com 10% de entrada em capitais próprios).\n\nVou enviar o link da gestora a seguir.',
-    };
-  }
-  if (q2 === 'SIM' && q3 === 'SIM' && q4 === 'SIM' && q5 === 'NAO') {
+  if (q2 === 'SIM' && q3 === 'SIM' && q5 === 'NAO') {
     return {
       key: '90',
       comment: 'Possível viabilidade de 90%',
@@ -312,6 +334,32 @@ function classifyFinancingAnswers(q2, q3, q4, q5, q7) {
     comment: 'Possível viabilidade a confirmar (caso com particularidades)',
     body:
       'Resultado indefinido:\n✅ Em termos gerais o seu caso tem particularidades. Vale a pena tentar e falar com um gestor de crédito para analisar o seu caso em detalhe.',
+  };
+}
+
+/** Investidor que ainda não mora em Portugal: só CTEF + 20% entrada. */
+function classifyForeignInvestorAnswers(q3, capitalOk) {
+  if (q3 === 'NAO') {
+    return {
+      key: 'inviavel',
+      comment: 'Sem viabilidade (não reside em PT, sem CTEF)',
+      body:
+        'Resultado inviável:\n❌ Sem contrato de trabalho efetivo, é muito difícil obter aprovação. Os bancos em Portugal costumam exigir estabilidade profissional demonstrável.',
+    };
+  }
+  if (capitalOk === 'NAO') {
+    return {
+      key: 'inviavel',
+      comment: 'Sem viabilidade (não reside em PT, sem 20% entrada)',
+      body:
+        'Resultado inviável:\n❌ Como regra, para investidores estrangeiros os bancos em Portugal financiam em muitos casos cerca de 80% do valor do imóvel — ou seja, é habitual precisar de cerca de 20% em capitais próprios. Sem essa entrada, fica muito difícil avançar.',
+    };
+  }
+  return {
+    key: 'foreign-80',
+    comment: 'Possível viabilidade ~80% (não reside em PT)',
+    body:
+      'Resultado (investidor estrangeiro):\n✅ Em termos gerais, com contrato de trabalho efetivo e cerca de 20% em capitais próprios para entrada, o seu caso alinha-se com o que muitos bancos em Portugal costumam pedir (financiamento na ordem dos 80% do valor do imóvel). Não é garantia de aprovação — vale confirmar com um gestor de crédito.',
   };
 }
 
@@ -349,7 +397,8 @@ async function startFinancingQuiz(whatsappDigits, pushName) {
   const displayFirstName = firstNameFromPushName(pushName);
   const fullPushName = String(pushName || '').trim() || displayFirstName;
   setCreditQuizState(whatsappDigits, {
-    step: 'AWAIT_MARITAL',
+    step: 'AWAIT_RESIDENCE',
+    track: null,
     mode: null,
     answers: {},
     displayFirstName,
@@ -375,10 +424,7 @@ async function startFinancingQuiz(whatsappDigits, pushName) {
     'Vou fazer-lhe algumas perguntas e, no final, digo-lhe em termos gerais se consegue financiar uma casa em Portugal, ok?',
   );
   await sleep(1200);
-  await sendEvolutionText(
-    whatsappDigits,
-    '1- Você é CASADO ou SOLTEIRO? (Em união de facto, responda como CASADO.)',
-  );
+  await sendEvolutionText(whatsappDigits, '1- Você já mora em Portugal?\nSIM ou NÃO');
 }
 
 /**
@@ -448,6 +494,30 @@ async function tryHandleFinancingQuiz(whatsappDigits, trimmed, pushName) {
   const state = getCreditQuizState(whatsappDigits);
   if (!state) return false;
 
+  if (state.step === 'AWAIT_RESIDENCE') {
+    const res = parseSimNao(trimmed);
+    if (!res) {
+      await sendEvolutionText(
+        whatsappDigits,
+        'Não entendi. Por favor responda apenas com SIM ou NÃO.',
+      );
+      await sleep(800);
+      await sendEvolutionText(whatsappDigits, '1- Você já mora em Portugal?\nSIM ou NÃO');
+      setCreditQuizState(whatsappDigits, state);
+      return true;
+    }
+    state.answers.residencePt = res;
+    state.track = res === 'SIM' ? 'resident' : 'foreign';
+    state.step = 'AWAIT_MARITAL';
+    if (pushName && String(pushName).trim()) state.fullPushName = String(pushName).trim();
+    setCreditQuizState(whatsappDigits, state);
+    await sendEvolutionText(
+      whatsappDigits,
+      '2- Você é CASADO ou SOLTEIRO? (Em união de facto, responda como CASADO.)',
+    );
+    return true;
+  }
+
   if (state.step === 'AWAIT_MARITAL') {
     const marital = parseMaritalStatus(trimmed);
     if (!marital) {
@@ -458,16 +528,71 @@ async function tryHandleFinancingQuiz(whatsappDigits, trimmed, pushName) {
       await sleep(800);
       await sendEvolutionText(
         whatsappDigits,
-        '1- Você é CASADO ou SOLTEIRO? (Em união de facto, responda como CASADO.)',
+        '2- Você é CASADO ou SOLTEIRO? (Em união de facto, responda como CASADO.)',
       );
       setCreditQuizState(whatsappDigits, state);
       return true;
     }
     state.mode = marital;
-    state.step = 'AWAIT_Q2';
     if (pushName && String(pushName).trim()) state.fullPushName = String(pushName).trim();
+    if (state.track === 'foreign') {
+      state.step = 'AWAIT_FOREIGN_CTEF';
+      setCreditQuizState(whatsappDigits, state);
+      await sendEvolutionText(whatsappDigits, financingForeignCtefQuestion(state.mode));
+      return true;
+    }
+    state.step = 'AWAIT_Q2';
     setCreditQuizState(whatsappDigits, state);
     await sendEvolutionText(whatsappDigits, financingQuestion(state.mode, 2));
+    return true;
+  }
+
+  if (state.step === 'AWAIT_FOREIGN_CTEF') {
+    const ans = parseSimNao(trimmed);
+    if (!ans) {
+      await sendEvolutionText(
+        whatsappDigits,
+        'Não entendi. Por favor responda apenas com SIM ou NÃO.',
+      );
+      await sleep(800);
+      await sendEvolutionText(whatsappDigits, financingForeignCtefQuestion(/** @type {'casado'|'solteiro'} */ (state.mode)));
+      setCreditQuizState(whatsappDigits, state);
+      return true;
+    }
+    state.answers.q3 = ans;
+    if (ans === 'NAO') {
+      const outcome = classifyForeignInvestorAnswers('NAO', 'NAO');
+      await finishFinancingQuizWithOutcome(whatsappDigits, state, outcome);
+      return true;
+    }
+    state.step = 'AWAIT_FOREIGN_CAPITAL';
+    setCreditQuizState(whatsappDigits, state);
+    await sendEvolutionText(whatsappDigits, financingForeignCapitalQuestion(/** @type {'casado'|'solteiro'} */ (state.mode)));
+    return true;
+  }
+
+  if (state.step === 'AWAIT_FOREIGN_CAPITAL') {
+    const ans = parseSimNao(trimmed);
+    if (!ans) {
+      await sendEvolutionText(
+        whatsappDigits,
+        'Não entendi. Por favor responda apenas com SIM ou NÃO.',
+      );
+      await sleep(800);
+      await sendEvolutionText(
+        whatsappDigits,
+        financingForeignCapitalQuestion(/** @type {'casado'|'solteiro'} */ (state.mode)),
+      );
+      setCreditQuizState(whatsappDigits, state);
+      return true;
+    }
+    state.answers.capitalOk = ans;
+    if (ans === 'SIM') state.answers.capitalPercent = 20;
+    const outcome = classifyForeignInvestorAnswers(
+      /** @type {'SIM'|'NAO'} */ (state.answers.q3 || 'NAO'),
+      ans,
+    );
+    await finishFinancingQuizWithOutcome(whatsappDigits, state, outcome);
     return true;
   }
 
@@ -488,7 +613,6 @@ async function tryHandleFinancingQuiz(whatsappDigits, trimmed, pushName) {
       const outcome = classifyFinancingAnswers(
         /** @type {'SIM'|'NAO'} */ (state.answers.q2 || 'NAO'),
         'NAO',
-        /** @type {'SIM'|'NAO'} */ (state.answers.q4 || 'NAO'),
         /** @type {'SIM'|'NAO'} */ (state.answers.q5 || 'NAO'),
         'NAO',
       );
@@ -537,20 +661,20 @@ async function tryHandleFinancingQuiz(whatsappDigits, trimmed, pushName) {
       return true;
     }
 
-    const { q2, q3, q4, q5 } = state.answers;
-    if (!q2 || !q3 || !q4 || !q5) {
+    const { q2, q3, q5 } = state.answers;
+    if (!q2 || !q3 || !q5) {
       clearCreditQuizState(whatsappDigits);
       return true;
     }
-    const outcome = classifyFinancingAnswers(q2, q3, q4, q5, state.answers.q7);
+    const outcome = classifyFinancingAnswers(q2, q3, q5, state.answers.q7);
     await finishFinancingQuizWithOutcome(whatsappDigits, state, outcome);
     return true;
   }
 
-  const stepToNum = { AWAIT_Q2: 2, AWAIT_Q3: 3, AWAIT_Q4: 4, AWAIT_Q5: 5 };
+  const stepToNum = { AWAIT_Q2: 2, AWAIT_Q3: 3, AWAIT_Q4: 4 };
   const stepKey = state.step;
   if (!(stepKey in stepToNum)) return false;
-  const num = stepToNum[/** @type {'AWAIT_Q2'|'AWAIT_Q3'|'AWAIT_Q4'|'AWAIT_Q5'} */ (stepKey)];
+  const num = stepToNum[/** @type {'AWAIT_Q2'|'AWAIT_Q3'|'AWAIT_Q4'} */ (stepKey)];
   const ans = parseSimNao(trimmed);
   if (!ans) {
     await sendEvolutionText(
@@ -568,10 +692,9 @@ async function tryHandleFinancingQuiz(whatsappDigits, trimmed, pushName) {
 
   if (num === 2) state.answers.q2 = ans;
   else if (num === 3) state.answers.q3 = ans;
-  else if (num === 4) state.answers.q4 = ans;
   else state.answers.q5 = ans;
 
-  if (num < 5) {
+  if (num < 4) {
     if (num === 3 && ans === 'NAO') {
       state.step = 'AWAIT_Q7';
       setCreditQuizState(whatsappDigits, state);
@@ -581,17 +704,15 @@ async function tryHandleFinancingQuiz(whatsappDigits, trimmed, pushName) {
       );
       return true;
     }
-    const next = /** @type {'AWAIT_Q2'|'AWAIT_Q3'|'AWAIT_Q4'|'AWAIT_Q5'} */ (
-      num === 2 ? 'AWAIT_Q3' : num === 3 ? 'AWAIT_Q4' : 'AWAIT_Q5'
-    );
+    const next = /** @type {'AWAIT_Q2'|'AWAIT_Q3'|'AWAIT_Q4'} */ (num === 2 ? 'AWAIT_Q3' : 'AWAIT_Q4');
     state.step = next;
     setCreditQuizState(whatsappDigits, state);
     await sendEvolutionText(whatsappDigits, financingQuestion(state.mode, num + 1));
     return true;
   }
 
-  const { q2, q3, q4, q5 } = state.answers;
-  if (!q2 || !q3 || !q4 || !state.answers.q5) {
+  const { q2, q3, q5 } = state.answers;
+  if (!q2 || !q3 || !q5) {
     clearCreditQuizState(whatsappDigits);
     return true;
   }
@@ -600,9 +721,8 @@ async function tryHandleFinancingQuiz(whatsappDigits, trimmed, pushName) {
     return true;
   }
 
-  // Antes do resultado final, confirmar capitais próprios quando for necessário (10% ou 20%)
   if (q3 === 'SIM') {
-    const requiredPct = computeRequiredCapitalPercent(q2, q3, q4, state.answers.q5);
+    const requiredPct = computeRequiredCapitalPercent(q2, q3, q5);
     if (requiredPct && state.answers.capitalOk !== 'SIM') {
       state.pendingCapitalPercent = requiredPct;
       state.step = 'AWAIT_CAPITALS';
@@ -615,7 +735,7 @@ async function tryHandleFinancingQuiz(whatsappDigits, trimmed, pushName) {
     }
   }
 
-  const outcome = classifyFinancingAnswers(q2, q3, q4, state.answers.q5, state.answers.q7);
+  const outcome = classifyFinancingAnswers(q2, q3, q5, state.answers.q7);
   await finishFinancingQuizWithOutcome(whatsappDigits, state, outcome);
   return true;
 }

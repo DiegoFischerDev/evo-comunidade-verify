@@ -37,7 +37,7 @@ const CHATBOT_ALLOWED_INSTANCES = parseCsvSet(
 
 const LOG_WEBHOOK = process.env.LOG_WEBHOOK === '1' || process.env.LOG_WEBHOOK === 'true';
 
-/** Junta mensagens do mesmo número numa janela de silêncio antes de confirmar no backend */
+/** Junta mensagens do mesmo número só enquanto o texto ainda não contém um código completo; com código válido confirma de imediato */
 const DEBOUNCE_MS = Number(process.env.WHATSAPP_INBOUND_DEBOUNCE_MS || 10000);
 
 /** @type {Map<string, { parts: string[], timer: ReturnType<typeof setTimeout> | null }>} */
@@ -1230,13 +1230,26 @@ function bufferIncomingMessage(whatsappDigits, text, instanceName) {
   }
   if (buf.timer) clearTimeout(buf.timer);
   buf.parts.push(trimmed);
-  buf.timer = setTimeout(() => flushWhatsappBuffer(whatsappDigits), DEBOUNCE_MS);
-  console.log('[wa-verify] buffer', {
-    whatsapp: whatsappDigits,
-    parts: buf.parts.length,
-    debounceMs: DEBOUNCE_MS,
-    preview: trimmed.slice(0, 80),
-  });
+  const combined = buf.parts.join('\n');
+  const hasCode = Boolean(extractCode(combined));
+
+  if (hasCode) {
+    buf.timer = null;
+    console.log('[wa-verify] buffer (flush imediato)', {
+      whatsapp: whatsappDigits,
+      parts: buf.parts.length,
+      preview: trimmed.slice(0, 80),
+    });
+    flushWhatsappBuffer(whatsappDigits);
+  } else {
+    buf.timer = setTimeout(() => flushWhatsappBuffer(whatsappDigits), DEBOUNCE_MS);
+    console.log('[wa-verify] buffer', {
+      whatsapp: whatsappDigits,
+      parts: buf.parts.length,
+      debounceMs: DEBOUNCE_MS,
+      preview: trimmed.slice(0, 80),
+    });
+  }
   return true;
 }
 

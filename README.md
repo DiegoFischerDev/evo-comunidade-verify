@@ -84,11 +84,21 @@ curl -i -X POST "https://wa-verify.seudominio.com/webhook/evolution/messages-ups
 
 ### Deploy na VPS (resumo)
 
-Usar `deploy/docker-compose.vps.yml`, criar `/opt/wa-verify/.env`, e subir:
+Criar `/opt/wa-verify/.env` e, na pasta do projeto (com `docker-compose.yml` na **raiz** — é o ficheiro padrão do `docker compose`):
 
 ```bash
 cd /opt/wa-verify
 docker compose pull
 docker compose up -d
 ```
+
+**Qual ficheiro Compose usar**
+
+| Situação | Comando |
+|----------|---------|
+| Repositório completo com `docker-compose.yml` na raiz (recomendado) | `docker compose ps` / `docker compose logs -f receiver` |
+| Só existe `deploy/docker-compose.vps.yml` (clone antigo ou path diferente) | `docker compose -f deploy/docker-compose.vps.yml ps` (a partir da **raiz** do repo) |
+| Erro `open .../deploy/docker-compose.vps.yml: no such file or directory` | Na VPS não há pasta `deploy/`. Usa o `docker-compose.yml` na raiz: `ls -la /opt/wa-verify/*.yml` e `docker compose` **sem** `-f deploy/...` |
+
+Os dois ficheiros no repositório descrevem os mesmos serviços; o da raiz usa `build.context: ./app`, o de `deploy/` usa `../app` porque o ficheiro está dentro de `deploy/`.
 

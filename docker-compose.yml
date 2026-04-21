@@ -1,8 +1,7 @@
-# VPS (sem nginx no container). O nginx do host faz proxy para as portas locais.
-# Evolution v2.x: Redis oficial = CACHE_REDIS_* (REDIS_URI sozinho costuma dar "redis disconnected").
+# Compose na raiz do repositório — uso: cd /opt/wa-verify && docker compose up -d
+# (build do receiver: pasta ./app)
 #
-# Preferir o ficheiro na raiz do repo: ../docker-compose.yml (comando a partir da raiz: docker compose …)
-# Este ficheiro mantém build context ../app para quem corre: docker compose -f deploy/docker-compose.vps.yml
+# Alternativa equivalente: deploy/docker-compose.vps.yml (context ../app relativamente a deploy/)
 
 services:
   evolution_db:
@@ -53,7 +52,7 @@ services:
 
   receiver:
     build:
-      context: ../app
+      context: ./app
       dockerfile: Dockerfile
     restart: unless-stopped
     environment:

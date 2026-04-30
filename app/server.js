@@ -1346,6 +1346,40 @@ async function confirmOnCommunity({ code, whatsapp, evolutionInstance }) {
 }
 
 /**
+ * POST sem seguir redirects automáticos do fetch: um 301/302 http→https transformava o 2.º pedido em GET
+ * e o Nest respondia «Cannot GET /internal/whatsapp/partner-lead-intake». Repetimos POST para `Location`.
+ */
+async function fetchBackendPostNoRedirectLoss(startUrl, headers, bodyStr) {
+  let url = startUrl;
+  const hopMax = 6;
+  for (let hop = 0; hop < hopMax; hop++) {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: bodyStr,
+      redirect: 'manual',
+    });
+    if ([301, 302, 303, 307, 308].includes(res.status)) {
+      const loc = res.headers.get('location');
+      if (!loc) return res;
+      const next = new URL(loc, url).href;
+      if (hop === 0) {
+        console.warn('[wa-verify] partner-lead-intake: redirect HTTP', res.status, '→', next, '(rePOST)');
+      }
+      url = next;
+      continue;
+    }
+    return res;
+  }
+  return await fetch(url, {
+    method: 'POST',
+    headers,
+    body: bodyStr,
+    redirect: 'manual',
+  });
+}
+
+/**
  * Encaminha mensagens «Olá, gostaria…» para o backend criar lead + respostas WhatsApp.
  */
 async function postPartnerLeadIntake({ whatsappDigits, message, evolutionInstance, messageId }) {
@@ -1360,17 +1394,15 @@ async function postPartnerLeadIntake({ whatsappDigits, message, evolutionInstanc
     evolutionInstance: evolutionInstance || undefined,
     messageId: messageId || undefined,
   });
+  const headers = {
+    'content-type': 'application/json',
+    ...(COMMUNITY_INTERNAL_SECRET ? { 'x-internal-secret': COMMUNITY_INTERNAL_SECRET } : {}),
+  };
   for (let i = 0; i < bases.length; i++) {
     const base = bases[i];
     try {
-      const res = await fetch(`${base.replace(/\/$/, '')}/internal/whatsapp/partner-lead-intake`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          ...(COMMUNITY_INTERNAL_SECRET ? { 'x-internal-secret': COMMUNITY_INTERNAL_SECRET } : {}),
-        },
-        body: payload,
-      });
+      const endpoint = `${base.replace(/\/$/, '')}/internal/whatsapp/partner-lead-intake`;
+      const res = await fetchBackendPostNoRedirectLoss(endpoint, headers, payload);
       if (res.ok) {
         if (i > 0) console.warn('[wa-verify] partner-lead-intake: usado fallback', { base });
         return;

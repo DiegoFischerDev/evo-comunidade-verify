@@ -1345,6 +1345,44 @@ async function confirmOnCommunity({ code, whatsapp, evolutionInstance }) {
   throw errors[errors.length - 1] || new Error('Falha ao confirmar no backend');
 }
 
+/**
+ * Encaminha mensagens «Olá, gostaria…» para o backend criar lead + respostas WhatsApp.
+ */
+async function postPartnerLeadIntake({ whatsappDigits, message, evolutionInstance, messageId }) {
+  const bases = [COMMUNITY_API_URL, COMMUNITY_API_URL_FALLBACK].filter(Boolean);
+  if (!bases.length) {
+    console.warn('[wa-verify] partner-lead-intake: COMMUNITY_API_URL ausente');
+    return;
+  }
+  const payload = JSON.stringify({
+    whatsapp: String(whatsappDigits || '').replace(/\D/g, ''),
+    message: String(message || '').trim(),
+    evolutionInstance: evolutionInstance || undefined,
+    messageId: messageId || undefined,
+  });
+  for (let i = 0; i < bases.length; i++) {
+    const base = bases[i];
+    try {
+      const res = await fetch(`${base.replace(/\/$/, '')}/internal/whatsapp/partner-lead-intake`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(COMMUNITY_INTERNAL_SECRET ? { 'x-internal-secret': COMMUNITY_INTERNAL_SECRET } : {}),
+        },
+        body: payload,
+      });
+      if (res.ok) {
+        if (i > 0) console.warn('[wa-verify] partner-lead-intake: usado fallback', { base });
+        return;
+      }
+      const txt = await res.text().catch(() => '');
+      console.warn('[wa-verify] partner-lead-intake falhou', res.status, txt.slice(0, 200));
+    } catch (err) {
+      console.warn('[wa-verify] partner-lead-intake erro', err?.message || err);
+    }
+  }
+}
+
 async function sendEvolutionText(toDigits, text, preferredInstance) {
   const base = EVOLUTION_API_URL.replace(/\/$/, '');
   const key = EVOLUTION_API_KEY;
@@ -1472,8 +1510,26 @@ async function evolutionWebhookHandler(req, res) {
         continue;
       }
 
+      const decodedWebhookText = maybeUrlDecodeInboundText(trimmed);
+
       // Gatilhos globais (reiniciam / cancelam quiz de financiamento em curso)
-      const normalized = normalizeText(maybeUrlDecodeInboundText(trimmed));
+      const normalized = normalizeText(decodedWebhookText);
+
+      if (normalized.startsWith('ola, gostaria')) {
+        clearCreditQuizState(whatsapp);
+        clearAtendimentoPromptState(whatsapp);
+        postPartnerLeadIntake({
+          whatsappDigits: whatsapp,
+          message: decodedWebhookText,
+          evolutionInstance: instanceName || '',
+          messageId: msgId,
+        }).catch((err) =>
+          console.warn('[wa-verify] partner-lead-intake async', err?.message || err),
+        );
+        anyBuffered = true;
+        continue;
+      }
+
       if (FINANCING_QUIZ_TRIGGERS.has(normalized) || /^questionario\b/.test(normalized)) {
         clearCreditQuizState(whatsapp);
         clearAtendimentoPromptState(whatsapp);

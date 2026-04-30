@@ -6,7 +6,7 @@ Projeto simples para **confirmar contas via WhatsApp** usando a **Evolution API*
 
 1. O utilizador cria conta na Comunidade e recebe um **código** (ex.: `99999`)
 2. O frontend abre um link para WhatsApp com mensagem pré-definida:
-   - `Gostaria de confirmar meu acesso a comunidade RPM com o codigo: 99999`
+   - `Gostaria de confirmar meu acesso à Comunidade Rafa Portugal com o codigo: 99999`
 3. A Evolution API recebe a mensagem e envia um webhook `MESSAGES_UPSERT` para este serviço.
 4. Este serviço valida a mensagem, extrai o código e chama a API do backend da Comunidade para **confirmar a conta** e gravar o WhatsApp que enviou o código.
 

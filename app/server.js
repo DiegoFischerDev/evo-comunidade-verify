@@ -1590,8 +1590,7 @@ async function evolutionWebhookHandler(req, res) {
       if (FINANCING_QUIZ_TRIGGERS.has(normalized) || /^questionario\b/.test(normalized)) {
         clearCreditQuizState(whatsapp);
         clearAtendimentoPromptState(whatsapp);
-        const offerCommunityLink = FINANCING_QUIZ_PRIMARY_TRIGGERS.has(normalized);
-        startFinancingQuiz(whatsapp, pushName || '', { offerCommunityLink }).catch((err) => {
+        startFinancingQuiz(whatsapp, pushName || '', { offerCommunityLink: true }).catch((err) => {
           console.warn('[wa-verify] financing-quiz: erro ao iniciar', err?.message || err);
         });
         anyBuffered = true;

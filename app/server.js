@@ -493,7 +493,7 @@ async function startFinancingQuiz(whatsappDigits, pushName, options = {}) {
     await sendEvolutionText(
       whatsappDigits,
       [
-        'Antes de começarmos o questionário: se quiser entrar no grupo gratuito da Comunidade Rafa Portugal no WhatsApp (dicas sobre Portugal, imigração e mais), é só usar este link:',
+        'Antes de começarmos o questionário: se quiser entrar no grupo gratuito da Comunidade Rafa Portugal no WhatsApp (assuntos sobre imigração e compra de casa em Portugal), é só usar este link:',
         COMMUNITY_WHATSAPP_GROUP_URL,
       ].join('\n'),
     );

@@ -76,13 +76,22 @@ const CREDIT_HELP_TRIGGER = normalizeText('Ola, preciso de ajuda em relação ao
 
 const CREATE_ACCOUNT_TRIGGER = normalizeText('criar conta');
 
-const FINANCING_QUIZ_TRIGGERS = new Set([
+/** Gatilho principal do gestor de crédito (mensagem exata após normalização). */
+const FINANCING_QUIZ_PRIMARY_TRIGGERS = new Set([
   normalizeText('Ola, quero saber se consigo financiar uma casa em Portugal'),
   normalizeText('Oi, quero saber se consigo financiar uma casa em Portugal'),
+]);
+
+const FINANCING_QUIZ_TRIGGERS = new Set([
+  ...FINANCING_QUIZ_PRIMARY_TRIGGERS,
   // Atalho para refazer o questionário (normalizeText remove acentos)
   normalizeText('questionario'),
   normalizeText('questionário'),
 ]);
+
+/** Grupo gratuito Comunidade Rafa Portugal (oferta após boas-vindas no fluxo de financiamento). */
+const COMMUNITY_WHATSAPP_GROUP_URL =
+  'https://chat.whatsapp.com/FA0bFhdIMD6BeMYRceFrCv?mode=gi_t';
 
 const QUIZ_STATE_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -448,7 +457,13 @@ function clearAtendimentoPromptState(whatsappDigits) {
   atendimentoPromptStates.delete(whatsappDigits);
 }
 
-async function startFinancingQuiz(whatsappDigits, pushName) {
+/**
+ * @param {string} whatsappDigits
+ * @param {string} pushName
+ * @param {{ offerCommunityLink?: boolean }} [options]
+ */
+async function startFinancingQuiz(whatsappDigits, pushName, options = {}) {
+  const { offerCommunityLink = false } = options;
   const displayFirstName = firstNameFromPushName(pushName);
   const fullPushName = String(pushName || '').trim() || displayFirstName;
   setCreditQuizState(whatsappDigits, {
@@ -474,6 +489,16 @@ async function startFinancingQuiz(whatsappDigits, pushName) {
 
   await sendEvolutionText(whatsappDigits, `Oi ${displayFirstName} tudo bem?`);
   await sleep(1200);
+  if (offerCommunityLink) {
+    await sendEvolutionText(
+      whatsappDigits,
+      [
+        'Antes de começarmos o questionário: se quiser entrar no grupo gratuito da Comunidade Rafa Portugal no WhatsApp (dicas sobre Portugal, imigração e mais), é só usar este link:',
+        COMMUNITY_WHATSAPP_GROUP_URL,
+      ].join('\n'),
+    );
+    await sleep(1200);
+  }
   await sendEvolutionText(
     whatsappDigits,
     'Vou fazer-lhe algumas perguntas e, no final, digo-lhe em termos gerais se consegue financiar uma casa em Portugal, ok?',
@@ -1565,7 +1590,8 @@ async function evolutionWebhookHandler(req, res) {
       if (FINANCING_QUIZ_TRIGGERS.has(normalized) || /^questionario\b/.test(normalized)) {
         clearCreditQuizState(whatsapp);
         clearAtendimentoPromptState(whatsapp);
-        startFinancingQuiz(whatsapp, pushName || '').catch((err) => {
+        const offerCommunityLink = FINANCING_QUIZ_PRIMARY_TRIGGERS.has(normalized);
+        startFinancingQuiz(whatsapp, pushName || '', { offerCommunityLink }).catch((err) => {
           console.warn('[wa-verify] financing-quiz: erro ao iniciar', err?.message || err);
         });
         anyBuffered = true;

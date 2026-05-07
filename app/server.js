@@ -61,6 +61,32 @@ function normalizeText(text) {
     .toLowerCase();
 }
 
+function isOutboundPartnerPendingLeadsListMessage(normalizedText) {
+  const t = String(normalizedText || '').trim();
+  if (!t) return false;
+  // Mensagem que nós próprios enviamos ao parceiro com a lista (não deve disparar flows).
+  if (t.startsWith('ola, temos esses leads aguardando atendimento')) return true;
+  if (t.includes('lead-redirect?leadid=')) return true;
+  return false;
+}
+
+function shouldTriggerServiceInfoFlow({ normalizedText, fromMe, serviceKey }) {
+  const t = String(normalizedText || '').trim();
+  if (!t) return false;
+  const needle = `mais sobre o servico de ${serviceKey}`;
+  if (!t.includes(needle)) return false;
+
+  // Se foi a nossa própria instância a enviar, só aceitamos o formato:
+  // "JOSE ... mais sobre o serviço de X ..." (nome na 1ª palavra).
+  // Isso evita loops quando enviamos listas contendo o texto do gatilho.
+  if (fromMe === true) {
+    if (isOutboundPartnerPendingLeadsListMessage(t)) return false;
+    return /^\p{L}{2,}\b[\s\S]*\bmais sobre o servico de (relocation|internet)\b/u.test(t);
+  }
+
+  return true;
+}
+
 /** Links / pré-visualizações podem enviar o texto em percent-encoding (ex.: Ol%C3%A1%2C%20quero...). */
 function maybeUrlDecodeInboundText(text) {
   const t = String(text || '').trim();
@@ -1710,7 +1736,7 @@ async function evolutionWebhookHandler(req, res) {
       }
 
       // Novo flow: "mais sobre o serviço de relocation"
-      if (normalized.includes('mais sobre o servico de relocation')) {
+      if (shouldTriggerServiceInfoFlow({ normalizedText: normalized, fromMe, serviceKey: 'relocation' })) {
         postRelocationServiceInfoFlow({
           whatsappDigits: whatsapp,
           message: decodedWebhookText,
@@ -1729,7 +1755,7 @@ async function evolutionWebhookHandler(req, res) {
       }
 
       // Novo flow: "mais sobre o serviço de internet"
-      if (normalized.includes('mais sobre o servico de internet')) {
+      if (shouldTriggerServiceInfoFlow({ normalizedText: normalized, fromMe, serviceKey: 'internet' })) {
         postInternetServiceInfoFlow({
           whatsappDigits: whatsapp,
           message: decodedWebhookText,

@@ -1629,7 +1629,7 @@ async function evolutionWebhookHandler(req, res) {
 
     const parts = listIncomingMessageParts(req.body);
     let anyBuffered = false;
-    for (const { remoteJid, text, pushName, msgId } of parts) {
+    for (const { remoteJid, text, pushName, msgId, fromMe } of parts) {
       const whatsapp = normalizeWhatsappFromJid(remoteJid);
       if (!whatsapp) continue;
       if (instanceName) {
@@ -1685,7 +1685,12 @@ async function evolutionWebhookHandler(req, res) {
       }
 
       // Novo flow: "tenho interesse no imovel ID"
-      if (/^tenho interesse no imovel\s+\d+\b/.test(normalized)) {
+      if (normalized.includes('tenho interesse no imovel') && /\btenho interesse no imovel\s+\d+\b/.test(normalized)) {
+        // Só processa quando for mensagem recebida (evita loop / mensagens da própria instância)
+        if (fromMe === true) {
+          anyBuffered = true;
+          continue;
+        }
         postHouseInterestFlow({
           whatsappDigits: whatsapp,
           message: decodedWebhookText,

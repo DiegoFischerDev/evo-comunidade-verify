@@ -1676,7 +1676,10 @@ async function evolutionWebhookHandler(req, res) {
           message: decodedWebhookText,
           evolutionInstance: instanceName || '',
           messageId: msgId,
-          contactName: pushName || '',
+          // Quando a própria instância envia o gatilho (fromMe=true),
+          // o "pushName" costuma ser o nome da instância — não queremos gravar isso como nome do lead.
+          // Nessa situação, omitimos o contactName para o backend usar o nome correto do destinatário.
+          contactName: fromMe === true ? '' : (pushName || ''),
         }).catch((err) =>
           console.warn('[wa-verify] relocation-service-info async', err?.message || err),
         );

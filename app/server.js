@@ -1478,6 +1478,44 @@ async function postRelocationServiceInfoFlow({ whatsappDigits, message, evolutio
   }
 }
 
+/**
+ * Flow: "tenho interesse no imovel ID"
+ * Encaminha para o backend atribuir ao parceiro do imóvel.
+ */
+async function postHouseInterestFlow({ whatsappDigits, message, evolutionInstance, messageId, contactName }) {
+  const bases = [COMMUNITY_API_URL, COMMUNITY_API_URL_FALLBACK].filter(Boolean);
+  if (!bases.length) {
+    console.warn('[wa-verify] house-interest: COMMUNITY_API_URL ausente');
+    return;
+  }
+  const payload = JSON.stringify({
+    whatsapp: String(whatsappDigits || '').replace(/\D/g, ''),
+    message: String(message || '').trim(),
+    evolutionInstance: evolutionInstance || undefined,
+    contactName: String(contactName || '').trim() || undefined,
+    messageId: messageId || undefined,
+  });
+  const headers = {
+    'content-type': 'application/json',
+    ...(COMMUNITY_INTERNAL_SECRET ? { 'x-internal-secret': COMMUNITY_INTERNAL_SECRET } : {}),
+  };
+  for (let i = 0; i < bases.length; i++) {
+    const base = bases[i];
+    try {
+      const endpoint = `${base.replace(/\/$/, '')}/internal/whatsapp/category-flow/house-interest`;
+      const res = await fetchBackendPostNoRedirectLoss(endpoint, headers, payload);
+      if (res.ok) {
+        if (i > 0) console.warn('[wa-verify] house-interest: usado fallback', { base });
+        return;
+      }
+      const txt = await res.text().catch(() => '');
+      console.warn('[wa-verify] house-interest falhou', res.status, txt.slice(0, 200));
+    } catch (err) {
+      console.warn('[wa-verify] house-interest erro', err?.message || err);
+    }
+  }
+}
+
 async function sendEvolutionText(toDigits, text, preferredInstance) {
   const base = EVOLUTION_API_URL.replace(/\/$/, '');
   const key = EVOLUTION_API_KEY;
@@ -1641,6 +1679,21 @@ async function evolutionWebhookHandler(req, res) {
           contactName: pushName || '',
         }).catch((err) =>
           console.warn('[wa-verify] relocation-service-info async', err?.message || err),
+        );
+        anyBuffered = true;
+        continue;
+      }
+
+      // Novo flow: "tenho interesse no imovel ID"
+      if (/^tenho interesse no imovel\s+\d+\b/.test(normalized)) {
+        postHouseInterestFlow({
+          whatsappDigits: whatsapp,
+          message: decodedWebhookText,
+          evolutionInstance: instanceName || '',
+          messageId: msgId,
+          contactName: pushName || '',
+        }).catch((err) =>
+          console.warn('[wa-verify] house-interest async', err?.message || err),
         );
         anyBuffered = true;
         continue;

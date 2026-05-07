@@ -1480,6 +1480,45 @@ async function postRelocationServiceInfoFlow({ whatsappDigits, message, evolutio
 }
 
 /**
+ * Flow: "mais sobre o serviço de internet" (público).
+ * Encaminha para o backend responder + criar lead + atribuir parceiro.
+ */
+async function postInternetServiceInfoFlow({ whatsappDigits, message, evolutionInstance, messageId, contactName, fromMe }) {
+  const bases = [COMMUNITY_API_URL, COMMUNITY_API_URL_FALLBACK].filter(Boolean);
+  if (!bases.length) {
+    console.warn('[wa-verify] internet-service-info: COMMUNITY_API_URL ausente');
+    return;
+  }
+  const payload = JSON.stringify({
+    whatsapp: String(whatsappDigits || '').replace(/\D/g, ''),
+    message: String(message || '').trim(),
+    evolutionInstance: evolutionInstance || undefined,
+    contactName: String(contactName || '').trim() || undefined,
+    messageId: messageId || undefined,
+    fromMe: fromMe === true ? true : undefined,
+  });
+  const headers = {
+    'content-type': 'application/json',
+    ...(COMMUNITY_INTERNAL_SECRET ? { 'x-internal-secret': COMMUNITY_INTERNAL_SECRET } : {}),
+  };
+  for (let i = 0; i < bases.length; i++) {
+    const base = bases[i];
+    try {
+      const endpoint = `${base.replace(/\/$/, '')}/internal/whatsapp/category-flow/internet-service-info`;
+      const res = await fetchBackendPostNoRedirectLoss(endpoint, headers, payload);
+      if (res.ok) {
+        if (i > 0) console.warn('[wa-verify] internet-service-info: usado fallback', { base });
+        return;
+      }
+      const txt = await res.text().catch(() => '');
+      console.warn('[wa-verify] internet-service-info falhou', res.status, txt.slice(0, 200));
+    } catch (err) {
+      console.warn('[wa-verify] internet-service-info erro', err?.message || err);
+    }
+  }
+}
+
+/**
  * Flow: "tenho interesse no imovel ID"
  * Encaminha para o backend atribuir ao parceiro do imóvel.
  */
@@ -1684,6 +1723,22 @@ async function evolutionWebhookHandler(req, res) {
           fromMe: fromMe === true,
         }).catch((err) =>
           console.warn('[wa-verify] relocation-service-info async', err?.message || err),
+        );
+        anyBuffered = true;
+        continue;
+      }
+
+      // Novo flow: "mais sobre o serviço de internet"
+      if (normalized.includes('mais sobre o servico de internet')) {
+        postInternetServiceInfoFlow({
+          whatsappDigits: whatsapp,
+          message: decodedWebhookText,
+          evolutionInstance: instanceName || '',
+          messageId: msgId,
+          contactName: fromMe === true ? '' : (pushName || ''),
+          fromMe: fromMe === true,
+        }).catch((err) =>
+          console.warn('[wa-verify] internet-service-info async', err?.message || err),
         );
         anyBuffered = true;
         continue;

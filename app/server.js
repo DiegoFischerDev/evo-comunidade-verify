@@ -73,18 +73,13 @@ function isOutboundPartnerPendingLeadsListMessage(normalizedText) {
 function shouldTriggerServiceInfoFlow({ normalizedText, fromMe, serviceKey }) {
   const t = String(normalizedText || '').trim();
   if (!t) return false;
-  const needle = `mais sobre o servico de ${serviceKey}`;
-  if (!t.includes(needle)) return false;
+  // Desativado para fromMe=true (evita loops com mensagens enviadas pela própria instância).
+  if (fromMe === true) return false;
 
-  // Se foi a nossa própria instância a enviar, só aceitamos o formato:
-  // "JOSE ... mais sobre o serviço de X ..." (nome na 1ª palavra).
-  // Isso evita loops quando enviamos listas contendo o texto do gatilho.
-  if (fromMe === true) {
-    if (isOutboundPartnerPendingLeadsListMessage(t)) return false;
-    return /^\p{L}{2,}\b[\s\S]*\bmais sobre o servico de (relocation|internet)\b/u.test(t);
-  }
-
-  return true;
+  // Gatilhos públicos (digitados pelo utilizador).
+  const serviceNeedle = `mais sobre o servico de ${serviceKey}`;
+  const atendimentoNeedle = `atendimento ${serviceKey}`;
+  return t.includes(serviceNeedle) || t === atendimentoNeedle || t.startsWith(`${atendimentoNeedle} `);
 }
 
 /** Links / pré-visualizações podem enviar o texto em percent-encoding (ex.: Ol%C3%A1%2C%20quero...). */
@@ -1742,11 +1737,8 @@ async function evolutionWebhookHandler(req, res) {
           message: decodedWebhookText,
           evolutionInstance: instanceName || '',
           messageId: msgId,
-          // Quando a própria instância envia o gatilho (fromMe=true),
-          // o "pushName" costuma ser o nome da instância — não queremos gravar isso como nome do lead.
-          // Nessa situação, omitimos o contactName para o backend usar o nome correto do destinatário.
-          contactName: fromMe === true ? '' : (pushName || ''),
-          fromMe: fromMe === true,
+          contactName: pushName || '',
+          fromMe: false,
         }).catch((err) =>
           console.warn('[wa-verify] relocation-service-info async', err?.message || err),
         );
@@ -1761,8 +1753,8 @@ async function evolutionWebhookHandler(req, res) {
           message: decodedWebhookText,
           evolutionInstance: instanceName || '',
           messageId: msgId,
-          contactName: fromMe === true ? '' : (pushName || ''),
-          fromMe: fromMe === true,
+          contactName: pushName || '',
+          fromMe: false,
         }).catch((err) =>
           console.warn('[wa-verify] internet-service-info async', err?.message || err),
         );

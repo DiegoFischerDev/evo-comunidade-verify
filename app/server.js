@@ -1444,7 +1444,7 @@ async function postPartnerLeadIntake({ whatsappDigits, message, evolutionInstanc
  * Flow: "mais sobre o serviço de relocation" (público).
  * Encaminha para o backend responder + criar lead + atribuir parceiro.
  */
-async function postRelocationServiceInfoFlow({ whatsappDigits, message, evolutionInstance, messageId, contactName }) {
+async function postRelocationServiceInfoFlow({ whatsappDigits, message, evolutionInstance, messageId, contactName, fromMe }) {
   const bases = [COMMUNITY_API_URL, COMMUNITY_API_URL_FALLBACK].filter(Boolean);
   if (!bases.length) {
     console.warn('[wa-verify] relocation-service-info: COMMUNITY_API_URL ausente');
@@ -1456,6 +1456,7 @@ async function postRelocationServiceInfoFlow({ whatsappDigits, message, evolutio
     evolutionInstance: evolutionInstance || undefined,
     contactName: String(contactName || '').trim() || undefined,
     messageId: messageId || undefined,
+    fromMe: fromMe === true ? true : undefined,
   });
   const headers = {
     'content-type': 'application/json',
@@ -1680,6 +1681,7 @@ async function evolutionWebhookHandler(req, res) {
           // o "pushName" costuma ser o nome da instância — não queremos gravar isso como nome do lead.
           // Nessa situação, omitimos o contactName para o backend usar o nome correto do destinatário.
           contactName: fromMe === true ? '' : (pushName || ''),
+          fromMe: fromMe === true,
         }).catch((err) =>
           console.warn('[wa-verify] relocation-service-info async', err?.message || err),
         );

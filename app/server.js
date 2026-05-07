@@ -1704,17 +1704,19 @@ async function evolutionWebhookHandler(req, res) {
         continue;
       }
 
+      // IMPORTANT: ignorar quaisquer mensagens enviadas pela nossa própria instância (fromMe=true)
+      // para evitar loops (flows que reagem a mensagens que nós mesmos enviamos).
+      if (fromMe === true) {
+        anyBuffered = true;
+        continue;
+      }
+
       const decodedWebhookText = maybeUrlDecodeInboundText(trimmed);
 
       // Gatilhos globais (reiniciam / cancelam quiz de financiamento em curso)
       const normalized = normalizeText(decodedWebhookText);
 
       if (normalized.startsWith('ola, gostaria')) {
-        // Só intake quando for mensagem recebida (evita loop / mensagens da própria instância)
-        if (item?.fromMe === true) {
-          anyBuffered = true;
-          continue;
-        }
         clearCreditQuizState(whatsapp);
         clearAtendimentoPromptState(whatsapp);
         postPartnerLeadIntake({
@@ -1764,11 +1766,6 @@ async function evolutionWebhookHandler(req, res) {
 
       // Novo flow: "tenho interesse no imovel ID"
       if (normalized.includes('tenho interesse no imovel') && /\btenho interesse no imovel\s+\d+\b/.test(normalized)) {
-        // Só processa quando for mensagem recebida (evita loop / mensagens da própria instância)
-        if (fromMe === true) {
-          anyBuffered = true;
-          continue;
-        }
         postHouseInterestFlow({
           whatsappDigits: whatsapp,
           message: decodedWebhookText,

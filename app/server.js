@@ -1195,7 +1195,6 @@ function listIncomingMessageParts(body) {
     const jid = String(key.remoteJid);
     if (jid.includes('@g.us')) return;
     if (jid.endsWith('@lid')) return;
-    if (key.fromMe === true) return;
     const text = textFromBaileysMessage(message);
     const msgId = key.id != null && key.id !== '' ? String(key.id) : '';
     parts.push({ remoteJid: jid, fromMe: key.fromMe, text, pushName, msgId });
@@ -1407,7 +1406,7 @@ async function fetchBackendPostNoRedirectLoss(startUrl, headers, bodyStr) {
 /**
  * Encaminha mensagens «Olá, gostaria…» para o backend criar lead + respostas WhatsApp.
  */
-async function postPartnerLeadIntake({ whatsappDigits, message, evolutionInstance, messageId }) {
+async function postPartnerLeadIntake({ whatsappDigits, message, evolutionInstance, messageId, contactName }) {
   const bases = [COMMUNITY_API_URL, COMMUNITY_API_URL_FALLBACK].filter(Boolean);
   if (!bases.length) {
     console.warn('[wa-verify] partner-lead-intake: COMMUNITY_API_URL ausente');
@@ -1417,6 +1416,7 @@ async function postPartnerLeadIntake({ whatsappDigits, message, evolutionInstanc
     whatsapp: String(whatsappDigits || '').replace(/\D/g, ''),
     message: String(message || '').trim(),
     evolutionInstance: evolutionInstance || undefined,
+    contactName: String(contactName || '').trim() || undefined,
     messageId: messageId || undefined,
   });
   const headers = {
@@ -1436,6 +1436,44 @@ async function postPartnerLeadIntake({ whatsappDigits, message, evolutionInstanc
       console.warn('[wa-verify] partner-lead-intake falhou', res.status, txt.slice(0, 200));
     } catch (err) {
       console.warn('[wa-verify] partner-lead-intake erro', err?.message || err);
+    }
+  }
+}
+
+/**
+ * Flow: "mais sobre o serviço de relocation" (público).
+ * Encaminha para o backend responder + criar lead + atribuir parceiro.
+ */
+async function postRelocationServiceInfoFlow({ whatsappDigits, message, evolutionInstance, messageId, contactName }) {
+  const bases = [COMMUNITY_API_URL, COMMUNITY_API_URL_FALLBACK].filter(Boolean);
+  if (!bases.length) {
+    console.warn('[wa-verify] relocation-service-info: COMMUNITY_API_URL ausente');
+    return;
+  }
+  const payload = JSON.stringify({
+    whatsapp: String(whatsappDigits || '').replace(/\D/g, ''),
+    message: String(message || '').trim(),
+    evolutionInstance: evolutionInstance || undefined,
+    contactName: String(contactName || '').trim() || undefined,
+    messageId: messageId || undefined,
+  });
+  const headers = {
+    'content-type': 'application/json',
+    ...(COMMUNITY_INTERNAL_SECRET ? { 'x-internal-secret': COMMUNITY_INTERNAL_SECRET } : {}),
+  };
+  for (let i = 0; i < bases.length; i++) {
+    const base = bases[i];
+    try {
+      const endpoint = `${base.replace(/\/$/, '')}/internal/whatsapp/category-flow/relocation-service-info`;
+      const res = await fetchBackendPostNoRedirectLoss(endpoint, headers, payload);
+      if (res.ok) {
+        if (i > 0) console.warn('[wa-verify] relocation-service-info: usado fallback', { base });
+        return;
+      }
+      const txt = await res.text().catch(() => '');
+      console.warn('[wa-verify] relocation-service-info falhou', res.status, txt.slice(0, 200));
+    } catch (err) {
+      console.warn('[wa-verify] relocation-service-info erro', err?.message || err);
     }
   }
 }
@@ -1573,6 +1611,11 @@ async function evolutionWebhookHandler(req, res) {
       const normalized = normalizeText(decodedWebhookText);
 
       if (normalized.startsWith('ola, gostaria')) {
+        // Só intake quando for mensagem recebida (evita loop / mensagens da própria instância)
+        if (item?.fromMe === true) {
+          anyBuffered = true;
+          continue;
+        }
         clearCreditQuizState(whatsapp);
         clearAtendimentoPromptState(whatsapp);
         postPartnerLeadIntake({
@@ -1580,8 +1623,24 @@ async function evolutionWebhookHandler(req, res) {
           message: decodedWebhookText,
           evolutionInstance: instanceName || '',
           messageId: msgId,
+          contactName: pushName || '',
         }).catch((err) =>
           console.warn('[wa-verify] partner-lead-intake async', err?.message || err),
+        );
+        anyBuffered = true;
+        continue;
+      }
+
+      // Novo flow: "mais sobre o serviço de relocation"
+      if (normalized.includes('mais sobre o servico de relocation')) {
+        postRelocationServiceInfoFlow({
+          whatsappDigits: whatsapp,
+          message: decodedWebhookText,
+          evolutionInstance: instanceName || '',
+          messageId: msgId,
+          contactName: pushName || '',
+        }).catch((err) =>
+          console.warn('[wa-verify] relocation-service-info async', err?.message || err),
         );
         anyBuffered = true;
         continue;

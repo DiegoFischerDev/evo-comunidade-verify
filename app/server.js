@@ -112,7 +112,7 @@ const FINANCING_QUIZ_TRIGGERS = new Set([
 
 /** Grupo gratuito Comunidade Rafa Portugal (oferta após boas-vindas no fluxo de financiamento). */
 const COMMUNITY_WHATSAPP_GROUP_URL =
-  'https://chat.whatsapp.com/FA0bFhdIMD6BeMYRceFrCv?mode=gi_t';
+  'https://chat.whatsapp.com/B5hWGRawImb8HzLbe1nLxg?mode=gi_t';
 
 const QUIZ_STATE_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -514,7 +514,7 @@ async function startFinancingQuiz(whatsappDigits, pushName, options = {}) {
     await sendEvolutionText(
       whatsappDigits,
       [
-        'Antes de começarmos o questionário: se quiser entrar no grupo gratuito da Comunidade Rafa Portugal no WhatsApp (assuntos sobre imigração e compra de casa em Portugal), é só usar este link:',
+        'Antes de começarmos o questionário: se quiser entrar no grupo gratuito da Comunidade Rafa Portugal para imóveis a venda em Portugal, é só usar este link:',
         COMMUNITY_WHATSAPP_GROUP_URL,
       ].join('\n'),
     );

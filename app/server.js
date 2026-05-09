@@ -93,8 +93,6 @@ function maybeUrlDecodeInboundText(text) {
   }
 }
 
-const CREDIT_HELP_TRIGGER = normalizeText('Ola, preciso de ajuda em relação ao contato da gestora de crédito');
-
 const CREATE_ACCOUNT_TRIGGER = normalizeText('criar conta');
 
 /** Gatilho principal do gestor de crédito (mensagem exata após normalização). */
@@ -451,7 +449,6 @@ function financingPracticalExampleForOutcome(outcomeKey) {
   }
 }
 
-const ATENDIMENTO_TRIGGER = normalizeText('atendimento');
 const ATENDIMENTO_PROMPT_TTL_MS = 24 * 60 * 60 * 1000;
 
 /** @type {Map<string, { uploadUrl: string, contactName: string, quizSummary: string, updatedAt: number }>} */
@@ -1716,22 +1713,6 @@ async function evolutionWebhookHandler(req, res) {
       // Gatilhos globais (reiniciam / cancelam quiz de financiamento em curso)
       const normalized = normalizeText(decodedWebhookText);
 
-      if (normalized.startsWith('ola, gostaria')) {
-        clearCreditQuizState(whatsapp);
-        clearAtendimentoPromptState(whatsapp);
-        postPartnerLeadIntake({
-          whatsappDigits: whatsapp,
-          message: decodedWebhookText,
-          evolutionInstance: instanceName || '',
-          messageId: msgId,
-          contactName: pushName || '',
-        }).catch((err) =>
-          console.warn('[wa-verify] partner-lead-intake async', err?.message || err),
-        );
-        anyBuffered = true;
-        continue;
-      }
-
       // Novo flow: "mais sobre o serviço de relocation"
       if (shouldTriggerServiceInfoFlow({ normalizedText: normalized, fromMe, serviceKey: 'relocation' })) {
         postRelocationServiceInfoFlow({
@@ -1789,33 +1770,11 @@ async function evolutionWebhookHandler(req, res) {
         continue;
       }
 
-      if (normalizeText(trimmed) === CREDIT_HELP_TRIGGER) {
-        clearCreditQuizState(whatsapp);
-        clearAtendimentoPromptState(whatsapp);
-        sendCreditHelpFlow({ whatsappDigits: whatsapp, contactName: pushName }).catch((err) => {
-          console.warn('[wa-verify] credit-help: erro ao enviar flow:', err?.message || err);
-        });
-        anyBuffered = true;
-        continue;
-      }
-
       if (normalizeText(trimmed) === CREATE_ACCOUNT_TRIGGER) {
         clearCreditQuizState(whatsapp);
         clearAtendimentoPromptState(whatsapp);
         sendCreateAccountFlow({ whatsappDigits: whatsapp, contactName: pushName }).catch((err) => {
           console.warn('[wa-verify] create-account: exceção:', err?.message || err);
-        });
-        anyBuffered = true;
-        continue;
-      }
-
-      if (normalized === ATENDIMENTO_TRIGGER || /^atendimento\b/.test(normalized)) {
-        clearCreditQuizState(whatsapp);
-        await handleSolicitarAtendimento({
-          whatsappDigits: whatsapp,
-          contactName: pushName || '',
-          uploadUrlHint: getAtendimentoPromptState(whatsapp)?.uploadUrl || '',
-          quizSummaryHint: getAtendimentoPromptState(whatsapp)?.quizSummary || '',
         });
         anyBuffered = true;
         continue;

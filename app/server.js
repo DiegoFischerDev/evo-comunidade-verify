@@ -54,6 +54,7 @@ function sleep(ms) {
 
 function normalizeText(text) {
   return String(text || '')
+    .replace(/[\u200B-\u200D\uFEFF\u2060]/g, '')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/\s+/g, ' ')
@@ -86,6 +87,25 @@ const FINANCING_QUIZ_TRIGGERS = new Set([
   normalizeText('questionario'),
   normalizeText('questionário'),
 ]);
+
+/**
+ * Igualdade exacta ou mensagem que começa pela frase de gatilho: o WhatsApp costuma acrescentar
+ * URL de pré-visualização, assinatura ou outra linha ao mesmo corpo — aí o texto deixa de ser
+ * byte-a-byte igual ao esperado e o Set falhava.
+ */
+function matchesFinancingQuizTrigger(normalized) {
+  if (FINANCING_QUIZ_TRIGGERS.has(normalized)) return true;
+  if (/^questionario\b/.test(normalized)) return true;
+  for (const t of FINANCING_QUIZ_PRIMARY_TRIGGERS) {
+    if (normalized.length < t.length) continue;
+    if (!normalized.startsWith(t)) continue;
+    const rest = normalized.slice(t.length);
+    if (rest === '') return true;
+    if (/^\s/.test(rest)) return true;
+    if (rest.startsWith('http')) return true;
+  }
+  return false;
+}
 
 /** Grupo gratuito Comunidade Rafa Portugal (oferta após boas-vindas no fluxo de financiamento). */
 const COMMUNITY_WHATSAPP_GROUP_URL =
@@ -1505,7 +1525,7 @@ async function evolutionWebhookHandler(req, res) {
       // Gatilhos globais (reiniciam / cancelam quiz de financiamento em curso)
       const normalized = normalizeText(decodedWebhookText);
 
-      if (FINANCING_QUIZ_TRIGGERS.has(normalized) || /^questionario\b/.test(normalized)) {
+      if (matchesFinancingQuizTrigger(normalized)) {
         clearCreditQuizState(whatsapp);
         clearAtendimentoPromptState(whatsapp);
         startFinancingQuiz(whatsapp, pushName || '', { offerCommunityLink: true }).catch((err) => {

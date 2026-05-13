@@ -574,7 +574,7 @@ async function finishFinancingQuizWithOutcome(whatsappDigits, state, outcome) {
 
     await sendEvolutionText(
       whatsappDigits,
-      'Deseja que o gestor(a) de crédito entre em contacto com você para atendimento e dar continuidade ao seu processo? Responda SIM ou NÃO.',
+      'Deseja enviar os seus documentos para o gestor(a) de crédito dar continuidade gratuitamente ao seu processo? Responda SIM ou NÃO.',
     );
     clearCreditQuizState(whatsappDigits);
   } catch (err) {
@@ -1122,8 +1122,8 @@ async function handleSolicitarAtendimento({
 
     const gestoraNome = extractGestoraName(atendimento?.gestora);
     const msgGestora = gestoraNome
-      ? `Perfeito! A gestora ${gestoraNome} foi atribuída ao seu atendimento e vai entrar em contacto consigo o mais breve possível.`
-      : 'Perfeito! O seu atendimento foi solicitado e uma gestora foi atribuída. Ela vai entrar em contacto consigo o mais breve possível.';
+      ? `Perfeito! A gestora ${gestoraNome} foi atribuída ao seu atendimento.`
+      : 'Perfeito! O seu atendimento foi solicitado e uma gestora foi atribuída.';
     await sendEvolutionText(whatsappDigits, msgGestora);
     await sleep(1200);
     const gestoraWhatsapp = extractGestoraWhatsapp(atendimento?.gestora);
@@ -1132,18 +1132,9 @@ async function handleSolicitarAtendimento({
       leadName: nome,
       quizSummary,
     });
-    if (gestoraWaLink) {
-      await sendEvolutionText(
-        whatsappDigits,
-        'Use esse link para falar com ela diretamente pelo WhatsApp:',
-      );
-      await sleep(1200);
-      await sendEvolutionText(whatsappDigits, gestoraWaLink);
-      await sleep(1200);
-    }
     await sendEvolutionText(
       whatsappDigits,
-      'Se quiser adiantar e já enviar os documentos necessários para avançar com o processo, pode fazer pelo link:',
+      'Agora precisamos que envie os documentos para a gestora iniciar a analise. Após envio, ela entrará em contato com você em um prazo maximo de 4 dias uteis. Acesse o link abaixo para receber a lista e enviar os documentos:',
     );
     await sleep(1200);
     if (uploadUrl) {

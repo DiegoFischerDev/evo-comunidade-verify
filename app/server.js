@@ -109,7 +109,7 @@ function matchesFinancingQuizTrigger(normalized) {
 
 /** Grupo gratuito Comunidade Rafa Portugal (oferta após boas-vindas no fluxo de financiamento). */
 const COMMUNITY_WHATSAPP_GROUP_URL =
-  'https://chat.whatsapp.com/B5hWGRawImb8HzLbe1nLxg?mode=gi_t';
+  'https://chat.whatsapp.com/EneiignxdnuHVy17rh5MTX?mode=gi_t';
 
 const QUIZ_STATE_TTL_MS = 24 * 60 * 60 * 1000;
 

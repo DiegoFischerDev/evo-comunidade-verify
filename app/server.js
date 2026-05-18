@@ -9,12 +9,6 @@ const PORT = process.env.PORT || 3100;
 // Segurança: valida que a chamada do webhook veio de quem tem o segredo
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || '';
 
-// Chamada interna para o backend da Comunidade
-const COMMUNITY_API_URL = (process.env.COMMUNITY_API_URL || '').replace(/\/$/, '');
-// Fallback (ex.: validar código também no stage quando o utilizador gerou no ambiente errado)
-const COMMUNITY_API_URL_FALLBACK = (process.env.COMMUNITY_API_URL_FALLBACK || '').replace(/\/$/, '');
-const COMMUNITY_INTERNAL_SECRET = process.env.COMMUNITY_INTERNAL_SECRET || '';
-
 // Envio de mensagens via Evolution (resposta automática de teste)
 const EVOLUTION_API_URL = (process.env.EVOLUTION_API_URL || '').replace(/\/$/, '');
 const EVOLUTION_API_KEY = process.env.EVOLUTION_API_KEY || '';
@@ -36,12 +30,6 @@ const CHATBOT_ALLOWED_INSTANCES = parseCsvSet(
 );
 
 const LOG_WEBHOOK = process.env.LOG_WEBHOOK === '1' || process.env.LOG_WEBHOOK === 'true';
-
-/** Junta mensagens do mesmo número só enquanto o texto ainda não contém um código completo; com código válido confirma de imediato */
-const DEBOUNCE_MS = Number(process.env.WHATSAPP_INBOUND_DEBOUNCE_MS || 10000);
-
-/** @type {Map<string, { parts: string[], timer: ReturnType<typeof setTimeout> | null }>} */
-const incomingBuffers = new Map();
 
 /** Evita disparar o mesmo flow várias vezes (por número) */
 const CREDIT_HELP_COOLDOWN_MS = Number(process.env.CREDIT_HELP_COOLDOWN_MS || 10 * 60 * 1000);
@@ -72,8 +60,6 @@ function maybeUrlDecodeInboundText(text) {
     return t;
   }
 }
-
-const CREATE_ACCOUNT_TRIGGER = normalizeText('criar conta');
 
 /** Gatilho principal do gestor de crédito (mensagem exata após normalização). */
 const FINANCING_QUIZ_PRIMARY_TRIGGERS = new Set([
@@ -582,7 +568,7 @@ async function finishFinancingQuizWithOutcome(whatsappDigits, state, outcome) {
     console.warn('[wa-verify] financing-quiz: lead falhou', { whatsapp: whatsappDigits, detail });
     await sendEvolutionText(
       whatsappDigits,
-      'Erro ao registar o seu contacto. Tente mais tarde ou escreva "criar conta".',
+      'Erro ao registar o seu contacto. Tente mais tarde.',
     );
     await sleep(800);
     await sendEvolutionText(whatsappDigits, detail);
@@ -1022,30 +1008,6 @@ async function requestIaAppAtendimento(whatsappDigits) {
   throw err;
 }
 
-async function sendCreateAccountFlow({ whatsappDigits, contactName }) {
-  const nome = String(contactName || '').trim() || 'Cliente WhatsApp';
-
-  try {
-    const data = await createIaAppLead(whatsappDigits, nome);
-    console.log('[wa-verify] create-account: ok', {
-      whatsapp: whatsappDigits,
-      id: data.id,
-      existing: data.existing === true,
-    });
-    await sendEvolutionText(whatsappDigits, 'Aqui está o seu link para upload:');
-    await sleep(1200);
-    await sendEvolutionText(whatsappDigits, String(data.upload_url));
-    return { ok: true, sent: 'success' };
-  } catch (err) {
-    const detail = err?.message || String(err);
-    console.warn('[wa-verify] create-account: falhou', { whatsapp: whatsappDigits, detail });
-    await sendEvolutionText(whatsappDigits, 'Erro ao criar a sua conta');
-    await sleep(1200);
-    await sendEvolutionText(whatsappDigits, detail);
-    return { ok: false, error: detail };
-  }
-}
-
 async function sendCreditHelpFlow({ whatsappDigits, contactName }) {
   const now = Date.now();
   const last = creditHelpLastTriggeredAt.get(whatsappDigits) || 0;
@@ -1300,83 +1262,6 @@ function resolveSendInstancesOrdered({ preferredInstance, whatsappDigits }) {
   return failoverEnabled ? ordered : ordered.slice(0, 1);
 }
 
-function extractCode(text) {
-  const raw = String(text || '');
-  const t = raw.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-  const normalized = t.toLowerCase();
-
-  // Regra 1: se tiver "codigo" em qualquer lugar + tiver número(s) de 6 dígitos, extrai o último
-  if (normalized.includes('codigo')) {
-    const sixes = [...t.matchAll(/\b(\d{6})\b/g)];
-    return sixes.length ? sixes[sixes.length - 1][1] : null;
-  }
-
-  // Regra 2: se a mensagem for APENAS número (sem mais texto) com 6 dígitos, extrai
-  const onlyDigits = raw.trim().replace(/\s+/g, '');
-  if (/^\d{6}$/.test(onlyDigits)) {
-    return onlyDigits;
-  }
-
-  return null;
-}
-
-async function confirmOnCommunity({ code, whatsapp, evolutionInstance }) {
-  const bases = [COMMUNITY_API_URL, COMMUNITY_API_URL_FALLBACK].filter(Boolean);
-  if (!bases.length) throw new Error('COMMUNITY_API_URL não configurada');
-
-  /** @param {string} base */
-  const attempt = async (base) => {
-    const res = await fetch(`${base}/auth/whatsapp/confirm`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        ...(COMMUNITY_INTERNAL_SECRET ? { 'x-internal-secret': COMMUNITY_INTERNAL_SECRET } : {}),
-      },
-      body: JSON.stringify({
-        code,
-        whatsapp,
-        evolutionInstance: evolutionInstance || undefined,
-      }),
-    });
-    const json = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      const msg =
-        (Array.isArray(json?.message) ? json.message.join(' ') : json?.message) ||
-        json?.error ||
-        `Erro ${res.status}`;
-      const err = new Error(String(msg));
-      // @ts-ignore - attach metadata for fallback logic
-      err.status = res.status;
-      // @ts-ignore
-      err.base = base;
-      throw err;
-    }
-    return json;
-  };
-
-  /** @type {any[]} */
-  const errors = [];
-  for (let i = 0; i < bases.length; i++) {
-    const base = bases[i];
-    try {
-      const out = await attempt(base);
-      if (i > 0) {
-        console.warn('[wa-verify] confirm: fallback usado', { base });
-      }
-      return out;
-    } catch (err) {
-      errors.push(err);
-      const status = err?.status;
-      // Só tenta o próximo ambiente quando parecer "código não encontrado/expirado".
-      const shouldFallback =
-        i < bases.length - 1 &&
-        (status === 400 || status === 404 || /c[oó]digo/i.test(String(err?.message || '')));
-      if (!shouldFallback) throw err;
-    }
-  }
-  throw errors[errors.length - 1] || new Error('Falha ao confirmar no backend');
-}
-
 async function sendEvolutionText(toDigits, text, preferredInstance) {
   const base = EVOLUTION_API_URL.replace(/\/$/, '');
   const key = EVOLUTION_API_KEY;
@@ -1408,65 +1293,6 @@ async function sendEvolutionText(toDigits, text, preferredInstance) {
     }
   }
   console.warn('[wa-verify] Evolution sendText falhou em todas as instâncias:', lastError);
-}
-
-function flushWhatsappBuffer(whatsappDigits) {
-  const buf = incomingBuffers.get(whatsappDigits);
-  if (!buf) return;
-  incomingBuffers.delete(whatsappDigits);
-  const combined = buf.parts.join('\n');
-  const code = extractCode(combined);
-  if (!code) {
-    console.warn('[wa-verify] flush: sem código no texto acumulado', {
-      len: combined.length,
-      preview: combined.slice(0, 120),
-    });
-    return;
-  }
-  console.log('[wa-verify] flush: a confirmar', { whatsapp: whatsappDigits, code });
-  const evolutionInstance = resolveSendInstance({ whatsappDigits });
-  confirmOnCommunity({ code, whatsapp: whatsappDigits, evolutionInstance })
-    .then(() => console.log('[wa-verify] conta confirmada no backend', { whatsapp: whatsappDigits }))
-    .catch((err) => console.error('[wa-verify] confirm failed:', err?.message || err));
-}
-
-function bufferIncomingMessage(whatsappDigits, text, instanceName) {
-  const trimmed = text && String(text).trim();
-  if (!trimmed) return false;
-
-  const inst = String(instanceName || '').trim();
-  if (inst) {
-    lastInboundInstanceByWhatsapp.set(whatsappDigits, inst);
-  }
-
-  let buf = incomingBuffers.get(whatsappDigits);
-  if (!buf) {
-    buf = { parts: [], timer: null };
-    incomingBuffers.set(whatsappDigits, buf);
-  }
-  if (buf.timer) clearTimeout(buf.timer);
-  buf.parts.push(trimmed);
-  const combined = buf.parts.join('\n');
-  const hasCode = Boolean(extractCode(combined));
-
-  if (hasCode) {
-    buf.timer = null;
-    console.log('[wa-verify] buffer (flush imediato)', {
-      whatsapp: whatsappDigits,
-      parts: buf.parts.length,
-      preview: trimmed.slice(0, 80),
-    });
-    flushWhatsappBuffer(whatsappDigits);
-  } else {
-    buf.timer = setTimeout(() => flushWhatsappBuffer(whatsappDigits), DEBOUNCE_MS);
-    console.log('[wa-verify] buffer', {
-      whatsapp: whatsappDigits,
-      parts: buf.parts.length,
-      debounceMs: DEBOUNCE_MS,
-      preview: trimmed.slice(0, 80),
-    });
-  }
-  return true;
 }
 
 app.get('/health', (_req, res) => {
@@ -1526,16 +1352,6 @@ async function evolutionWebhookHandler(req, res) {
         continue;
       }
 
-      if (normalizeText(trimmed) === CREATE_ACCOUNT_TRIGGER) {
-        clearCreditQuizState(whatsapp);
-        clearAtendimentoPromptState(whatsapp);
-        sendCreateAccountFlow({ whatsappDigits: whatsapp, contactName: pushName }).catch((err) => {
-          console.warn('[wa-verify] create-account: exceção:', err?.message || err);
-        });
-        anyBuffered = true;
-        continue;
-      }
-
       if (getCreditQuizState(whatsapp)) {
         const consumed = await tryHandleFinancingQuiz(whatsapp, trimmed, pushName || '');
         if (consumed) {
@@ -1556,13 +1372,12 @@ async function evolutionWebhookHandler(req, res) {
         }
       }
 
-      if (bufferIncomingMessage(whatsapp, trimmed, instanceName)) anyBuffered = true;
     }
 
     if (!anyBuffered) {
       return res.json({ ok: true, ignored: true });
     }
-    return res.json({ ok: true, debounced: true, debounceMs: DEBOUNCE_MS });
+    return res.json({ ok: true });
   } catch (err) {
     return res.status(500).json({ ok: false, message: err?.message || 'Erro' });
   }
@@ -1571,5 +1386,5 @@ async function evolutionWebhookHandler(req, res) {
 app.post(/^\/webhook\/evolution(\/.*)?$/, evolutionWebhookHandler);
 
 app.listen(PORT, () => {
-  console.log(`[wa-verify] listening on :${PORT} (debounce ${DEBOUNCE_MS}ms)`);
+  console.log(`[wa-verify] listening on :${PORT}`);
 });

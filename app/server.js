@@ -124,6 +124,7 @@ function extractMessageEvents(body) {
 }
 
 async function handleScan(body) {
+  const instance = body && body.instance ? String(body.instance) : '';
   const events = extractMessageEvents(body);
   for (const item of events) {
     try {
@@ -137,23 +138,30 @@ async function handleScan(body) {
       const senderNumber = digitsOnly(key.participant || remoteJid);
       const externalMessageId = key.id ? String(key.id) : undefined;
 
-      // Mídia com bytes (Webhook Base64): reencaminha como imagem/vídeo (com legenda).
+      // Mídia (imagem/vídeo): reencaminha sempre. Se não vier o base64 (Webhook Base64 desligado),
+      // o backend busca os bytes na Evolution via getBase64FromMediaMessage usando o id + instância.
       const media = extractMedia(item.message);
-      if (media && media.base64) {
+      if (media) {
+        if (LOG_WEBHOOK) {
+          console.log(
+            `[wa-verify] scan media kind=${media.kind} base64=${media.base64 ? 'sim' : 'não'} jid=${remoteJid}`,
+          );
+        }
         await forwardToBackend({
           groupJid: remoteJid,
           senderNumber,
           kind: media.kind,
-          base64: media.base64,
+          base64: media.base64 || undefined,
           mimeType: media.mimeType,
           fileName: media.fileName,
           text: String(media.caption || '').slice(0, 8000),
           externalMessageId,
+          instance: instance || undefined,
         });
         continue;
       }
 
-      // Texto (ou legenda sem bytes de mídia disponíveis).
+      // Texto.
       const text = extractMessageText(item.message);
       if (!text || !text.trim()) continue;
 
@@ -163,6 +171,7 @@ async function handleScan(body) {
         kind: 'text',
         text: String(text).slice(0, 8000),
         externalMessageId,
+        instance: instance || undefined,
       });
     } catch (e) {
       if (LOG_WEBHOOK) {

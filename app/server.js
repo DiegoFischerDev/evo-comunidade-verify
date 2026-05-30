@@ -1,8 +1,8 @@
 const express = require('express');
 
 const app = express();
-// Evolution envia payloads grandes; 25mb evita 413 caso volte a ser usado.
-app.use(express.json({ limit: '25mb' }));
+// Evolution envia payloads grandes (mídia em base64 quando Webhook Base64 está ativo).
+app.use(express.json({ limit: process.env.WEBHOOK_BODY_LIMIT || '256mb' }));
 
 const PORT = process.env.PORT || 3100;
 
@@ -37,6 +37,35 @@ function extractMessageText(message) {
     (message.documentMessage && message.documentMessage.caption) ||
     ''
   );
+}
+
+/**
+ * Extrai a mídia (imagem/vídeo) de uma mensagem da Evolution, incluindo o base64 quando o
+ * Webhook Base64 está ativo. Devolve null se não houver mídia suportada.
+ */
+function extractMedia(message) {
+  if (!message || typeof message !== 'object') return null;
+  const img = message.imageMessage;
+  const vid = message.videoMessage;
+  if (img && typeof img === 'object') {
+    return {
+      kind: 'image',
+      base64: img.base64 || message.base64 || '',
+      mimeType: img.mimetype || 'image/jpeg',
+      fileName: img.fileName || '',
+      caption: img.caption || '',
+    };
+  }
+  if (vid && typeof vid === 'object') {
+    return {
+      kind: 'video',
+      base64: vid.base64 || message.base64 || '',
+      mimeType: vid.mimetype || 'video/mp4',
+      fileName: vid.fileName || '',
+      caption: vid.caption || '',
+    };
+  }
+  return null;
 }
 
 /** Apenas dígitos (remove @s.whatsapp.net, +, espaços, etc.). */
@@ -104,17 +133,36 @@ async function handleScan(body) {
       if (!remoteJid.endsWith('@g.us')) continue;
       if (key.fromMe === true) continue;
 
-      const text = extractMessageText(item.message);
-      if (!text || !text.trim()) continue;
-
       // Em grupos, o autor real está em `participant`.
       const senderNumber = digitsOnly(key.participant || remoteJid);
+      const externalMessageId = key.id ? String(key.id) : undefined;
+
+      // Mídia com bytes (Webhook Base64): reencaminha como imagem/vídeo (com legenda).
+      const media = extractMedia(item.message);
+      if (media && media.base64) {
+        await forwardToBackend({
+          groupJid: remoteJid,
+          senderNumber,
+          kind: media.kind,
+          base64: media.base64,
+          mimeType: media.mimeType,
+          fileName: media.fileName,
+          text: String(media.caption || '').slice(0, 8000),
+          externalMessageId,
+        });
+        continue;
+      }
+
+      // Texto (ou legenda sem bytes de mídia disponíveis).
+      const text = extractMessageText(item.message);
+      if (!text || !text.trim()) continue;
 
       await forwardToBackend({
         groupJid: remoteJid,
         senderNumber,
+        kind: 'text',
         text: String(text).slice(0, 8000),
-        externalMessageId: key.id ? String(key.id) : undefined,
+        externalMessageId,
       });
     } catch (e) {
       if (LOG_WEBHOOK) {

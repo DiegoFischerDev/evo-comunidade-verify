@@ -73,6 +73,16 @@ function digitsOnly(value) {
   return String(value || '').replace(/\D+/g, '');
 }
 
+/** messageTimestamp da Evolution → segundos Unix (number | string | Long {low}). */
+function toUnixSeconds(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) return Math.floor(value);
+  if (typeof value === 'string' && /^\d+$/.test(value)) return parseInt(value, 10);
+  if (value && typeof value === 'object' && typeof value.low === 'number') {
+    return value.low;
+  }
+  return undefined;
+}
+
 /** Envia a mensagem ao backend; tenta URL principal e fallback. Best-effort. */
 async function forwardToBackend(payload) {
   const targets = [COMMUNITY_API_URL, COMMUNITY_API_URL_FALLBACK].filter(Boolean);
@@ -137,6 +147,7 @@ async function handleScan(body) {
       // Em grupos, o autor real está em `participant`.
       const senderNumber = digitsOnly(key.participant || remoteJid);
       const externalMessageId = key.id ? String(key.id) : undefined;
+      const messageTimestamp = toUnixSeconds(item.messageTimestamp);
 
       // Mídia (imagem/vídeo): reencaminha sempre. Se não vier o base64 (Webhook Base64 desligado),
       // o backend busca os bytes na Evolution via getBase64FromMediaMessage usando o id + instância.
@@ -157,6 +168,7 @@ async function handleScan(body) {
           text: String(media.caption || '').slice(0, 8000),
           externalMessageId,
           instance: instance || undefined,
+          messageTimestamp,
         });
         continue;
       }
@@ -172,6 +184,7 @@ async function handleScan(body) {
         text: String(text).slice(0, 8000),
         externalMessageId,
         instance: instance || undefined,
+        messageTimestamp,
       });
     } catch (e) {
       if (LOG_WEBHOOK) {

@@ -73,6 +73,48 @@ function digitsOnly(value) {
   return String(value || '').replace(/\D+/g, '');
 }
 
+/** Forma canónica PT: 9xxxxxxxx → 3519xxxxxxxx (alinhado com o backend). */
+function canonicalPhoneDigits(value) {
+  const d = digitsOnly(value);
+  if (!d) return '';
+  if (/^9\d{8}$/.test(d)) return `351${d}`;
+  return d;
+}
+
+/**
+ * Extrai dígitos de telefone de um JID; ignora grupos (@g.us) e LID (@lid).
+ * Rejeita strings só com dígitos demasiado longas (IDs LID sem sufixo).
+ */
+function phoneDigitsFromJidOrPhone(value) {
+  const s = String(value || '').trim();
+  if (!s) return '';
+  if (/@g\.us$/i.test(s) || /@lid$/i.test(s)) return '';
+  const local = s.includes('@') ? s.split('@')[0] : s;
+  const d = digitsOnly(local);
+  if (d.length < 8 || d.length > 15) return '';
+  return d;
+}
+
+/**
+ * Remetente real em mensagens de grupo (Evolution/Baileys).
+ * Ordem: senderPn, participantAlt, participant, contextInfo.participant, body.sender.
+ * Nunca usa remoteJid do grupo (@g.us).
+ */
+function extractSenderPhone(key, item, body) {
+  const candidates = [
+    key && key.senderPn,
+    key && key.participantAlt,
+    key && key.participant,
+    item && item.contextInfo && item.contextInfo.participant,
+    body && body.sender,
+  ];
+  for (const raw of candidates) {
+    const d = phoneDigitsFromJidOrPhone(raw);
+    if (d) return canonicalPhoneDigits(d);
+  }
+  return '';
+}
+
 /** messageTimestamp da Evolution → segundos Unix (number | string | Long {low}). */
 function toUnixSeconds(value) {
   if (typeof value === 'number' && Number.isFinite(value)) return Math.floor(value);
@@ -144,8 +186,21 @@ async function handleScan(body) {
       if (!remoteJid.endsWith('@g.us')) continue;
       if (key.fromMe === true) continue;
 
-      // Em grupos, o autor real está em `participant`.
-      const senderNumber = digitsOnly(key.participant || remoteJid);
+      const senderNumber = extractSenderPhone(key, item, body);
+      if (!senderNumber) {
+        if (LOG_WEBHOOK) {
+          console.log(
+            '[wa-verify] scan: remetente não identificado',
+            JSON.stringify({
+              participant: key.participant,
+              participantAlt: key.participantAlt,
+              senderPn: key.senderPn,
+              groupJid: remoteJid,
+            }),
+          );
+        }
+        continue;
+      }
       const externalMessageId = key.id ? String(key.id) : undefined;
       const messageTimestamp = toUnixSeconds(item.messageTimestamp);
 

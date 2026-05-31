@@ -125,18 +125,18 @@ function toUnixSeconds(value) {
   return undefined;
 }
 
-/** Envia a mensagem ao backend; tenta URL principal e fallback. Best-effort. */
-async function forwardToBackend(payload) {
+/** Envia a mensagem a um endpoint interno do backend; tenta URL principal e fallback. */
+async function forwardToBackendPath(path, payload, label) {
   const targets = [COMMUNITY_API_URL, COMMUNITY_API_URL_FALLBACK].filter(Boolean);
   if (!targets.length || !COMMUNITY_INTERNAL_SECRET) {
     if (LOG_WEBHOOK) {
-      console.log('[wa-verify] scan: backend não configurado (COMMUNITY_API_URL/SECRET)');
+      console.log(`[wa-verify] ${label}: backend não configurado (COMMUNITY_API_URL/SECRET)`);
     }
     return;
   }
   for (const base of targets) {
     try {
-      const res = await fetch(`${base}/whatsapp-scan/ingest`, {
+      const res = await fetch(`${base}${path}`, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
@@ -147,19 +147,24 @@ async function forwardToBackend(payload) {
       if (res.ok) {
         if (LOG_WEBHOOK) {
           const body = await res.json().catch(() => ({}));
-          console.log('[wa-verify] scan forwarded', body && body.status);
+          console.log(`[wa-verify] ${label} forwarded`, body && body.status);
         }
         return;
       }
       if (LOG_WEBHOOK) {
-        console.log('[wa-verify] scan backend respondeu', res.status, 'em', base);
+        console.log(`[wa-verify] ${label} backend respondeu`, res.status, 'em', base);
       }
     } catch (e) {
       if (LOG_WEBHOOK) {
-        console.log('[wa-verify] scan erro ao reencaminhar para', base, e && e.message);
+        console.log(`[wa-verify] ${label} erro ao reencaminhar para`, base, e && e.message);
       }
     }
   }
+}
+
+async function forwardToBackend(payload) {
+  await forwardToBackendPath('/whatsapp-scan/ingest', payload, 'scan');
+  await forwardToBackendPath('/job-offers/whatsapp/ingest', payload, 'job-offers');
 }
 
 /** Normaliza o(s) evento(s) de mensagem para um array de `{ data }`. */

@@ -84,8 +84,12 @@ curl -i -X POST "https://wa-verify.seudominio.com/webhook/evolution/messages-ups
 
 ### Atualizar só a Evolution (imagem Docker)
 
+Em `/opt/wa-verify` o `docker-compose.yml` **tem de** referir `evoapicloud/evolution-api:homolog` (não `v2.3.7`). Se a pasta **não for** um `git clone` (`fatal: not a git repository`), o push ao GitHub **não** altera esse ficheiro na VPS — usa o deploy CI (copia o compose) ou edita à mão:
+
 ```bash
 cd /opt/wa-verify
+sed -i 's|evoapicloud/evolution-api:v2.3.7|evoapicloud/evolution-api:homolog|' docker-compose.yml
+grep evolution-api docker-compose.yml
 docker compose pull evolution
 docker compose up -d --force-recreate evolution
 curl -sf http://127.0.0.1:18080/ | head -c 300

@@ -36,6 +36,17 @@ jobs:
             ghcr.io/${{ env.IMAGE_OWNER }}/wa-verify-receiver:latest
             ghcr.io/${{ env.IMAGE_OWNER }}/wa-verify-receiver:main
 
+      # /opt/wa-verify na VPS muitas vezes NÃO é git clone — enviamos o compose do CI.
+      - name: Copiar docker-compose.yml para VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+          source: docker-compose.yml
+          target: /opt/wa-verify/
+          overwrite: true
+
       - name: Deploy na VPS
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -47,12 +58,10 @@ jobs:
             set -e
             cd /opt/wa-verify
             if [ -d .git ]; then
-              git pull --ff-only origin main
-            else
-              echo "AVISO: /opt/wa-verify sem .git — atualiza docker-compose.yml à mão"
+              git pull --ff-only origin main || true
             fi
-            echo "=== imagem Evolution no compose ==="
-            grep -E 'image:.*evolution-api' docker-compose.yml deploy/docker-compose.vps.yml 2>/dev/null || grep 'image:.*evolution-api' docker-compose.yml
+            echo "=== imagem Evolution no compose (VPS) ==="
+            grep 'image:.*evolution-api' docker-compose.yml
             docker compose pull receiver evolution
             docker compose up -d --force-recreate evolution receiver
             echo "=== versão em execução (GET /) ==="

@@ -187,32 +187,23 @@ async function handleScan(body) {
     try {
       const key = item && item.key ? item.key : {};
       const remoteJid = String(key.remoteJid || '');
-      const isGroup = remoteJid.endsWith('@g.us');
-      const isChannel = remoteJid.endsWith('@newsletter');
-      // Grupos e canais (@newsletter); ignora mensagens enviadas pela própria instância.
-      if (!isGroup && !isChannel) continue;
+      if (!remoteJid.endsWith('@g.us')) continue;
       if (key.fromMe === true) continue;
 
-      let senderNumber;
-      if (isChannel) {
-        // Canais: sem participante; usamos o JID do canal como remetente lógico.
-        senderNumber = canonicalPhoneDigits(remoteJid.split('@')[0]) || '0';
-      } else {
-        senderNumber = extractSenderPhone(key, item, body);
-        if (!senderNumber) {
-          if (LOG_WEBHOOK) {
-            console.log(
-              '[wa-verify] scan: remetente não identificado',
-              JSON.stringify({
-                participant: key.participant,
-                participantAlt: key.participantAlt,
-                senderPn: key.senderPn,
-                groupJid: remoteJid,
-              }),
-            );
-          }
-          continue;
+      const senderNumber = extractSenderPhone(key, item, body);
+      if (!senderNumber) {
+        if (LOG_WEBHOOK) {
+          console.log(
+            '[wa-verify] scan: remetente não identificado',
+            JSON.stringify({
+              participant: key.participant,
+              participantAlt: key.participantAlt,
+              senderPn: key.senderPn,
+              groupJid: remoteJid,
+            }),
+          );
         }
+        continue;
       }
       const externalMessageId = key.id ? String(key.id) : undefined;
       const messageTimestamp = toUnixSeconds(item.messageTimestamp);

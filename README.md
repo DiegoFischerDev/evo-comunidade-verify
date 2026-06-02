@@ -12,7 +12,7 @@ Projeto simples para **confirmar contas via WhatsApp** usando a **Evolution API*
 
 ### Componentes....
 
-- **Evolution API**: `evoapicloud/evolution-api:homolog` (ex.: `findChannels`). Rollback manual na VPS: `v2.3.7`. O CI **não** reinicia a Evolution — só o receiver.
+- **Evolution API**: `evoapicloud/evolution-api:homolog`. O CI **não** reinicia a Evolution — só o receiver.
 - **Webhook receiver**: `app/` (Node/Express)
 
 ### Variáveis importantes (.env na VPS)

@@ -1,0 +1,8 @@
+# Local: docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build receiver
+
+services:
+  receiver:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    image: wa-verify-receiver:local

@@ -51,9 +51,8 @@ services:
       - evolution_instances:/evolution/instances
 
   receiver:
-    build:
-      context: ./app
-      dockerfile: Dockerfile
+    # VPS (/opt/wa-verify) não tem pasta app/ — imagem construída no GitHub Actions.
+    image: ghcr.io/diegofischerdev/wa-verify-receiver:main
     restart: unless-stopped
     environment:
       PORT: 3100

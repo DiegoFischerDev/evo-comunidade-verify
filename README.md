@@ -84,12 +84,20 @@ curl -i -X POST "https://wa-verify.seudominio.com/webhook/evolution/messages-ups
 
 ### Deploy na VPS (resumo)
 
-Criar `/opt/wa-verify/.env` e, na pasta do projeto (com `docker-compose.yml` na **raiz** — é o ficheiro padrão do `docker compose`):
+`/opt/wa-verify` usa `docker-compose.yml` + `.env` (não precisa da pasta `app/`). O **receiver** vem de `ghcr.io/diegofischerdev/wa-verify-receiver:main` (build no GitHub Actions).
+
+Se o pull na VPS falhar com **unauthorized**, torna o package público no GitHub ou adiciona o secret `GHCR_PULL_TOKEN` (PAT com `read:packages`) no repositório.
 
 ```bash
 cd /opt/wa-verify
-docker compose pull
-docker compose up -d
+docker compose pull receiver
+docker compose up -d receiver
+```
+
+Desenvolvimento local com build:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build receiver
 ```
 
 **Qual ficheiro Compose usar**

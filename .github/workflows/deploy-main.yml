@@ -36,15 +36,32 @@ jobs:
             ghcr.io/${{ env.IMAGE_OWNER }}/wa-verify-receiver:latest
             ghcr.io/${{ env.IMAGE_OWNER }}/wa-verify-receiver:main
 
-      - name: Deploy na VPS
+      # Atualiza só a secção receiver no compose da VPS (sem pasta app/).
+      - name: Copiar docker-compose.yml para VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+          source: docker-compose.yml
+          target: /opt/wa-verify/
+          overwrite: true
+
+      - name: Deploy receiver na VPS
         uses: appleboy/ssh-action@v1.0.3
+        env:
+          GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
           command_timeout: 25m
+          envs: GHCR_PULL_TOKEN
           script: |
             set -e
             cd /opt/wa-verify
+            if [ -n "$GHCR_PULL_TOKEN" ]; then
+              echo "$GHCR_PULL_TOKEN" | docker login ghcr.io -u ${{ env.IMAGE_OWNER }} --password-stdin
+            fi
             docker compose pull receiver
-            docker compose up -d receiver
+            docker compose up -d --force-recreate receiver

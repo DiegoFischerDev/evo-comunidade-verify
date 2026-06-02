@@ -183,6 +183,26 @@ function extractMessageEvents(body) {
 async function handleScan(body) {
   const instance = body && body.instance ? String(body.instance) : '';
   const events = extractMessageEvents(body);
+  if (LOG_WEBHOOK) {
+    const rawEvent = body && body.event;
+    if (!events.length) {
+      if (rawEvent) {
+        console.log(
+          '[wa-verify] webhook sem messages.upsert processável:',
+          rawEvent,
+          'instance=',
+          instance || '?',
+        );
+      }
+    } else {
+      console.log(
+        '[wa-verify] messages.upsert:',
+        events.length,
+        'item(ns) instance=',
+        instance || '?',
+      );
+    }
+  }
   for (const item of events) {
     try {
       const key = item && item.key ? item.key : {};
@@ -190,8 +210,23 @@ async function handleScan(body) {
       const isGroup = remoteJid.endsWith('@g.us');
       const isChannel = remoteJid.endsWith('@newsletter');
       // Grupos e canais (@newsletter); ignora mensagens enviadas pela própria instância.
-      if (!isGroup && !isChannel) continue;
-      if (key.fromMe === true) continue;
+      if (!isGroup && !isChannel) {
+        if (LOG_WEBHOOK) {
+          console.log('[wa-verify] skip: não é grupo/canal', remoteJid || '(jid vazio)');
+        }
+        continue;
+      }
+      if (key.fromMe === true) {
+        if (LOG_WEBHOOK) {
+          console.log(
+            '[wa-verify] skip: fromMe (publicaste tu no canal/grupo?)',
+            remoteJid,
+            'instance=',
+            instance || '?',
+          );
+        }
+        continue;
+      }
 
       let senderNumber;
       if (isChannel) {
@@ -243,7 +278,33 @@ async function handleScan(body) {
 
       // Texto.
       const text = extractMessageText(item.message);
-      if (!text || !text.trim()) continue;
+      if (!text || !text.trim()) {
+        if (LOG_WEBHOOK) {
+          const msgKeys =
+            item.message && typeof item.message === 'object'
+              ? Object.keys(item.message).join(',')
+              : '';
+          console.log(
+            '[wa-verify] skip: sem texto extraível',
+            remoteJid,
+            isChannel ? '(canal)' : '(grupo)',
+            msgKeys ? `messageKeys=${msgKeys}` : '',
+          );
+        }
+        continue;
+      }
+
+      if (LOG_WEBHOOK) {
+        console.log(
+          '[wa-verify] → backend',
+          isChannel ? 'CANAL' : 'grupo',
+          remoteJid,
+          'instance=',
+          instance || '?',
+          'textLen=',
+          String(text).trim().length,
+        );
+      }
 
       await forwardToBackend({
         groupJid: remoteJid,
@@ -267,7 +328,12 @@ function evolutionWebhookHandler(req, res) {
     return res.status(403).json({ message: 'Forbidden' });
   }
   if (LOG_WEBHOOK) {
-    console.log('[wa-verify] webhook event=', req.body && req.body.event);
+    const b = req.body;
+    console.log('[wa-verify] webhook IN', {
+      event: b && b.event,
+      instance: b && b.instance,
+      dataIsArray: !!(b && Array.isArray(b.data)),
+    });
   }
   // Processamento assíncrono (best-effort) — respondemos já 200 para a Evolution não reentregar.
   void handleScan(req.body);

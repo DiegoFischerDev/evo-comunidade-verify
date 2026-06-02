@@ -107,6 +107,30 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST \
 
 Se o manager ainda mostrar **2.3.7**, o serviço `evolution` não foi recriado: confere `grep image docker-compose.yml` em `/opt/wa-verify` e `docker compose ps`.
 
+### Logs em tempo real (canais `@newsletter`)
+
+Na VPS:
+
+```bash
+cd /opt/wa-verify
+# Ativa logs detalhados no receiver (se ainda não tiveres)
+grep -q '^LOG_WEBHOOK=' .env && sed -i 's/^LOG_WEBHOOK=.*/LOG_WEBHOOK=1/' .env || echo 'LOG_WEBHOOK=1' >> .env
+docker compose up -d --build --force-recreate receiver
+
+# Segue Evolution + receiver (publica no canal noutro telemóvel — posts da própria instância são skip fromMe)
+docker compose logs -f evolution receiver --tail=30
+```
+
+O que procurar no **receiver**:
+
+- `[wa-verify] webhook IN` com `event: messages.upsert` e `instance` certa (`comunidade MEO` ou `comunidade`)
+- `[wa-verify] → backend CANAL ...@newsletter` — ingest OK
+- `skip: fromMe` — publicaste tu no canal com o mesmo número da instância (normal ignorar)
+- `skip: não é grupo/canal` — Evolution enviou DM/outro JID, não canal
+- `webhook sem messages.upsert` — Evolution não está a enviar mensagens ao webhook global
+
+`findChannels` vazio **não impede** o webhook; são APIs de listagem separadas.
+
 Rollback rápido: no compose, `image: evoapicloud/evolution-api:v2.3.7`, depois `docker compose pull evolution && docker compose up -d evolution`.
 
 ### Deploy na VPS (resumo)

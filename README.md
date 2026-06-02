@@ -12,7 +12,7 @@ Projeto simples para **confirmar contas via WhatsApp** usando a **Evolution API*
 
 ### Componentes....
 
-- **Evolution API**: imagem `evoapicloud/evolution-api:latest` (antes `v2.3.7`). Inclui rotas mais recentes (ex. `findChannels` para canais `@newsletter`). Rollback: repor `v2.3.7` no compose e `docker compose pull evolution && docker compose up -d evolution`.
+- **Evolution API**: imagem `evoapicloud/evolution-api:homolog` (build develop ~2.4.x; antes `v2.3.7`). No manager deves ver **Version: 2.4.x** (se ainda aparecer 2.3.7, o container antigo não foi recriado). Rollback: `v2.3.7` no compose + `docker compose up -d --force-recreate evolution`.
 - **Webhook receiver**: `app/` (Node/Express)
 
 ### Variáveis importantes (.env na VPS)
@@ -87,7 +87,8 @@ curl -i -X POST "https://wa-verify.seudominio.com/webhook/evolution/messages-ups
 ```bash
 cd /opt/wa-verify
 docker compose pull evolution
-docker compose up -d evolution
+docker compose up -d --force-recreate evolution
+curl -sf http://127.0.0.1:18080/ | head -c 300
 ```
 
 Depois do arranque, confirma a instância `comunidade` (ou a tua) em **open** no painel/manager da Evolution. Smoke test:
@@ -100,7 +101,7 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST \
   "http://127.0.0.1:18080/chat/findChannels/comunidade"
 ```
 
-Se `findChannels` continuar 404, tenta a tag `homolog` (build mais recente que `latest`) no compose e repete o pull/up.
+Se o manager ainda mostrar **2.3.7**, o serviço `evolution` não foi recriado: confere `grep image docker-compose.yml` em `/opt/wa-verify` e `docker compose ps`.
 
 Rollback rápido: no compose, `image: evoapicloud/evolution-api:v2.3.7`, depois `docker compose pull evolution && docker compose up -d evolution`.
 

@@ -46,8 +46,17 @@ jobs:
           script: |
             set -e
             cd /opt/wa-verify
-            git pull --ff-only origin main || true
+            if [ -d .git ]; then
+              git pull --ff-only origin main
+            else
+              echo "AVISO: /opt/wa-verify sem .git — atualiza docker-compose.yml à mão"
+            fi
+            echo "=== imagem Evolution no compose ==="
+            grep -E 'image:.*evolution-api' docker-compose.yml deploy/docker-compose.vps.yml 2>/dev/null || grep 'image:.*evolution-api' docker-compose.yml
             docker compose pull receiver evolution
-            docker compose up -d evolution receiver
+            docker compose up -d --force-recreate evolution receiver
+            echo "=== versão em execução (GET /) ==="
+            curl -sf http://127.0.0.1:18080/ | head -c 400 || echo "curl falhou"
+            echo ""
             docker compose ps evolution receiver
 

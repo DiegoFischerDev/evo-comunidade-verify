@@ -25,8 +25,6 @@ services:
     restart: unless-stopped
 
   evolution:
-    # v2.3.7 não tem POST /chat/findChannels. `homolog` = build develop (~2.4.x).
-    # Rollback: evoapicloud/evolution-api:v2.3.7
     image: evoapicloud/evolution-api:homolog
     restart: unless-stopped
     environment:

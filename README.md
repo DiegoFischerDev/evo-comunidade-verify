@@ -12,7 +12,7 @@ Projeto simples para **confirmar contas via WhatsApp** usando a **Evolution API*
 
 ### Componentes....
 
-- **Evolution API**: imagem `evoapicloud/evolution-api:homolog` (build develop ~2.4.x; antes `v2.3.7`). No manager deves ver **Version: 2.4.x** (se ainda aparecer 2.3.7, o container antigo não foi recriado). Rollback: `v2.3.7` no compose + `docker compose up -d --force-recreate evolution`.
+- **Evolution API**: `evoapicloud/evolution-api:homolog` (ex.: `findChannels`). Rollback manual na VPS: `v2.3.7`. O CI **não** reinicia a Evolution — só o receiver.
 - **Webhook receiver**: `app/` (Node/Express)
 
 ### Variáveis importantes (.env na VPS)
@@ -81,57 +81,6 @@ curl -i -X POST "https://wa-verify.seudominio.com/webhook/evolution/messages-ups
   -H 'content-type: application/json' \
   --data '{"data":{"key":{"remoteJid":"351999999999@s.whatsapp.net"},"message":{"conversation":"codigo: 12345"}}}'
 ```
-
-### Atualizar só a Evolution (imagem Docker)
-
-Em `/opt/wa-verify` o `docker-compose.yml` **tem de** referir `evoapicloud/evolution-api:homolog` (não `v2.3.7`). Se a pasta **não for** um `git clone` (`fatal: not a git repository`), o push ao GitHub **não** altera esse ficheiro na VPS — usa o deploy CI (copia o compose) ou edita à mão:
-
-```bash
-cd /opt/wa-verify
-sed -i 's|evoapicloud/evolution-api:v2.3.7|evoapicloud/evolution-api:homolog|' docker-compose.yml
-grep evolution-api docker-compose.yml
-docker compose pull evolution
-docker compose up -d --force-recreate evolution
-curl -sf http://127.0.0.1:18080/ | head -c 300
-```
-
-Depois do arranque, confirma a instância `comunidade` (ou a tua) em **open** no painel/manager da Evolution. Smoke test:
-
-```bash
-# findChannels deixa de responder 404 (substitui API_KEY)
-curl -s -o /dev/null -w "%{http_code}\n" -X POST \
-  -H "apikey: $EVOLUTION_API_KEY" -H "Content-Type: application/json" \
-  -d '{"page":1,"limit":50}' \
-  "http://127.0.0.1:18080/chat/findChannels/comunidade"
-```
-
-Se o manager ainda mostrar **2.3.7**, o serviço `evolution` não foi recriado: confere `grep image docker-compose.yml` em `/opt/wa-verify` e `docker compose ps`.
-
-### Logs em tempo real (canais `@newsletter`)
-
-Na VPS:
-
-```bash
-cd /opt/wa-verify
-# Ativa logs detalhados no receiver (se ainda não tiveres)
-grep -q '^LOG_WEBHOOK=' .env && sed -i 's/^LOG_WEBHOOK=.*/LOG_WEBHOOK=1/' .env || echo 'LOG_WEBHOOK=1' >> .env
-docker compose up -d --build --force-recreate receiver
-
-# Segue Evolution + receiver (publica no canal noutro telemóvel — posts da própria instância são skip fromMe)
-docker compose logs -f evolution receiver --tail=30
-```
-
-O que procurar no **receiver**:
-
-- `[wa-verify] webhook IN` com `event: messages.upsert` e `instance` certa (`comunidade MEO` ou `comunidade`)
-- `[wa-verify] → backend CANAL ...@newsletter` — ingest OK
-- `skip: fromMe` — publicaste tu no canal com o mesmo número da instância (normal ignorar)
-- `skip: não é grupo/canal` — Evolution enviou DM/outro JID, não canal
-- `webhook sem messages.upsert` — Evolution não está a enviar mensagens ao webhook global
-
-`findChannels` vazio **não impede** o webhook; são APIs de listagem separadas.
-
-Rollback rápido: no compose, `image: evoapicloud/evolution-api:v2.3.7`, depois `docker compose pull evolution && docker compose up -d evolution`.
 
 ### Deploy na VPS (resumo)
 

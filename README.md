@@ -12,7 +12,7 @@ Projeto simples para **confirmar contas via WhatsApp** usando a **Evolution API*
 
 ### Componentes....
 
-- **Evolution API**: container `atendai/evolution-api`
+- **Evolution API**: imagem `evoapicloud/evolution-api:latest` (antes `v2.3.7`). Inclui rotas mais recentes (ex. `findChannels` para canais `@newsletter`). Rollback: repor `v2.3.7` no compose e `docker compose pull evolution && docker compose up -d evolution`.
 - **Webhook receiver**: `app/` (Node/Express)
 
 ### Variáveis importantes (.env na VPS)
@@ -81,6 +81,28 @@ curl -i -X POST "https://wa-verify.seudominio.com/webhook/evolution/messages-ups
   -H 'content-type: application/json' \
   --data '{"data":{"key":{"remoteJid":"351999999999@s.whatsapp.net"},"message":{"conversation":"codigo: 12345"}}}'
 ```
+
+### Atualizar só a Evolution (imagem Docker)
+
+```bash
+cd /opt/wa-verify
+docker compose pull evolution
+docker compose up -d evolution
+```
+
+Depois do arranque, confirma a instância `comunidade` (ou a tua) em **open** no painel/manager da Evolution. Smoke test:
+
+```bash
+# findChannels deixa de responder 404 (substitui API_KEY)
+curl -s -o /dev/null -w "%{http_code}\n" -X POST \
+  -H "apikey: $EVOLUTION_API_KEY" -H "Content-Type: application/json" \
+  -d '{"page":1,"limit":50}' \
+  "http://127.0.0.1:18080/chat/findChannels/comunidade"
+```
+
+Se `findChannels` continuar 404, tenta a tag `homolog` (build mais recente que `latest`) no compose e repete o pull/up.
+
+Rollback rápido: no compose, `image: evoapicloud/evolution-api:v2.3.7`, depois `docker compose pull evolution && docker compose up -d evolution`.
 
 ### Deploy na VPS (resumo)
 

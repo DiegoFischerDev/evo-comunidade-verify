@@ -25,7 +25,9 @@ services:
     restart: unless-stopped
 
   evolution:
-    image: evoapicloud/evolution-api:v2.3.7
+    # v2.3.7 (2025-12) não inclui POST /chat/findChannels (@newsletter).
+    # `latest` traz builds de develop (ex. 2.4.0-rc); rollback: v2.3.7
+    image: evoapicloud/evolution-api:latest
     restart: unless-stopped
     environment:
       AUTHENTICATION_API_KEY: ${EVOLUTION_API_KEY}

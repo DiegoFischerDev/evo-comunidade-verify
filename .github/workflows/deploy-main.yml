@@ -46,6 +46,8 @@ jobs:
           script: |
             set -e
             cd /opt/wa-verify
-            docker compose pull receiver
-            docker compose up -d receiver
+            git pull --ff-only origin main || true
+            docker compose pull receiver evolution
+            docker compose up -d evolution receiver
+            docker compose ps evolution receiver
 

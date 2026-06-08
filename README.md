@@ -87,6 +87,16 @@ curl -i -X POST "https://wa-verify.seudominio.com/webhook/evolution/messages-ups
 
 `/opt/wa-verify` usa `docker-compose.yml` + `.env` (não precisa da pasta `app/`). O **receiver** vem de `ghcr.io/diegofischerdev/wa-verify-receiver:main` (build no GitHub Actions).
 
+### Deploy falhou com `502 Bad Gateway` no push ao GHCR
+
+Erro **transitório** do GitHub Container Registry (o build da imagem já terminou; só o upload falhou).
+
+1. **Re-run** do workflow em Actions → «Deploy WhatsApp verify (main)» → *Re-run failed jobs*
+2. Ou dispara manualmente: Actions → *Run workflow*
+3. O workflow tenta o push **até 4 vezes** com intervalo crescente (45s, 90s, 135s)
+
+Se persistir após várias horas, verifica [GitHub Status](https://www.githubstatus.com/) (Packages / GHCR).
+
 Se o pull na VPS falhar com **unauthorized**, torna o package público no GitHub ou adiciona o secret `GHCR_PULL_TOKEN` (PAT com `read:packages`) no repositório.
 
 ```bash

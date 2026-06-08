@@ -43,6 +43,26 @@ services:
       WEBHOOK_GLOBAL_URL: ${WEBHOOK_PUBLIC_URL}
       WEBHOOK_GLOBAL_ENABLED: "true"
       WEBHOOK_EVENTS_MESSAGES_UPSERT: "true"
+      # Global webhook ativo envia todos os eventos por defeito — desligar o ruído (presence/contacts).
+      WEBHOOK_EVENTS_PRESENCE_UPDATE: "false"
+      WEBHOOK_EVENTS_CONTACTS_UPDATE: "false"
+      WEBHOOK_EVENTS_CONTACTS_UPSERT: "false"
+      WEBHOOK_EVENTS_CONTACTS_SET: "false"
+      WEBHOOK_EVENTS_CHATS_UPDATE: "false"
+      WEBHOOK_EVENTS_CHATS_UPSERT: "false"
+      WEBHOOK_EVENTS_CHATS_SET: "false"
+      WEBHOOK_EVENTS_CHATS_DELETE: "false"
+      WEBHOOK_EVENTS_MESSAGES_UPDATE: "false"
+      WEBHOOK_EVENTS_MESSAGES_EDITED: "false"
+      WEBHOOK_EVENTS_MESSAGES_DELETE: "false"
+      WEBHOOK_EVENTS_GROUP_PARTICIPANTS_UPDATE: "false"
+      WEBHOOK_EVENTS_GROUPS_UPDATE: "false"
+      WEBHOOK_EVENTS_GROUPS_UPSERT: "false"
+      WEBHOOK_EVENTS_CONNECTION_UPDATE: "false"
+      WEBHOOK_EVENTS_SEND_MESSAGE: "false"
+      LOG_LEVEL: ERROR
+      LOG_BAILEYS: error
+      LOG_COLOR: "false"
       DEFAULT_INSTANCE: ${EVOLUTION_INSTANCE:-comunidade}
     depends_on:
       evolution_db:

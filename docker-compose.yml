@@ -26,6 +26,11 @@ services:
   evolution:
     image: evoapicloud/evolution-api:homolog
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     environment:
       AUTHENTICATION_API_KEY: ${EVOLUTION_API_KEY}
       DATABASE_PROVIDER: postgresql
@@ -54,6 +59,11 @@ services:
     # VPS (/opt/wa-verify) não tem pasta app/ — imagem construída no GitHub Actions.
     image: ghcr.io/diegofischerdev/wa-verify-receiver:main
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
     environment:
       PORT: 3100
       WEBHOOK_SECRET: ${WEBHOOK_SECRET}

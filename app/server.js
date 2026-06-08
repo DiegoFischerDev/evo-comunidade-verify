@@ -176,13 +176,9 @@ const LOCATION_ECHO_DEDUPE_MS = 10 * 60 * 1000;
 
 function locationEchoDedupeKey(payload) {
   const id = payload.externalMessageId;
-  if (id) {
-    if (payload.locationKind === 'live' && payload.sequenceNumber != null) {
-      return `${id}:${payload.sequenceNumber}`;
-    }
-    return String(id);
-  }
-  return `${payload.chatJid}|${payload.locationKind}|${payload.latitude}|${payload.longitude}|${payload.sequenceNumber ?? ''}`;
+  // Uma resposta por mensagem WhatsApp (live location envia dezenas de updates no mesmo id).
+  if (id) return String(id);
+  return `${payload.chatJid}|${payload.locationKind}|${payload.latitude}|${payload.longitude}`;
 }
 
 function claimLocationEchoDedupe(key) {
@@ -384,14 +380,27 @@ async function handleScan(body) {
   }
 }
 
+function normalizeWebhookEventName(body) {
+  return String(body?.event || '')
+    .toLowerCase()
+    .replace(/[._-]/g, '');
+}
+
 function evolutionWebhookHandler(req, res) {
   if (WEBHOOK_SECRET && req.get('x-webhook-secret') !== WEBHOOK_SECRET) {
     return res.status(403).json({ message: 'Forbidden' });
   }
-  if (LOG_WEBHOOK) {
-    console.log('[wa-verify] webhook event=', req.body && req.body.event);
+
+  const eventNorm = normalizeWebhookEventName(req.body);
+  // Ignorar presence/contacts/chats — eram ~70% dos webhooks e gastavam CPU à toa.
+  if (eventNorm && eventNorm !== 'messagesupsert') {
+    return res.json({ ok: true, ignored: eventNorm });
   }
-  // Processamento assíncrono (best-effort) — respondemos já 200 para a Evolution não reentregar.
+
+  if (LOG_WEBHOOK) {
+    console.log('[wa-verify] webhook messages.upsert');
+  }
+
   void handleScan(req.body);
   void handleLocationEcho(req.body);
   return res.json({ ok: true });

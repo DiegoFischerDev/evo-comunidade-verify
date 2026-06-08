@@ -170,6 +170,32 @@ function toUnixSeconds(value) {
   return undefined;
 }
 
+/** Evita reencaminhar o mesmo webhook duas vezes (Evolution duplicada / duas instâncias). */
+const locationEchoDedupe = new Map();
+const LOCATION_ECHO_DEDUPE_MS = 10 * 60 * 1000;
+
+function locationEchoDedupeKey(payload) {
+  const id = payload.externalMessageId;
+  if (id) {
+    if (payload.locationKind === 'live' && payload.sequenceNumber != null) {
+      return `${id}:${payload.sequenceNumber}`;
+    }
+    return String(id);
+  }
+  return `${payload.chatJid}|${payload.locationKind}|${payload.latitude}|${payload.longitude}|${payload.sequenceNumber ?? ''}`;
+}
+
+function claimLocationEchoDedupe(key) {
+  if (!key) return true;
+  const now = Date.now();
+  for (const [k, ts] of locationEchoDedupe) {
+    if (now - ts > LOCATION_ECHO_DEDUPE_MS) locationEchoDedupe.delete(k);
+  }
+  if (locationEchoDedupe.has(key)) return false;
+  locationEchoDedupe.set(key, now);
+  return true;
+}
+
 /** Envia a mensagem a um endpoint interno do backend; tenta URL principal e fallback. */
 async function forwardToBackendPath(path, payload, label) {
   const targets = [COMMUNITY_API_URL, COMMUNITY_API_URL_FALLBACK].filter(Boolean);
@@ -237,21 +263,31 @@ async function handleLocationEcho(body) {
         );
       }
 
+      const payload = {
+        chatJid,
+        senderNumber: senderNumber || undefined,
+        locationKind: location.kind,
+        latitude: location.latitude,
+        longitude: location.longitude,
+        name: location.name || undefined,
+        address: location.address || undefined,
+        accuracyInMeters: location.accuracyInMeters,
+        sequenceNumber: location.sequenceNumber,
+        externalMessageId: key.id ? String(key.id) : undefined,
+        instance: instance || undefined,
+      };
+
+      const dedupeKey = locationEchoDedupeKey(payload);
+      if (!claimLocationEchoDedupe(dedupeKey)) {
+        if (LOG_WEBHOOK) {
+          console.log('[wa-verify] location-echo ignorado (duplicado)', dedupeKey);
+        }
+        continue;
+      }
+
       await forwardToBackendPath(
         '/whatsapp/location-echo/ingest',
-        {
-          chatJid,
-          senderNumber: senderNumber || undefined,
-          locationKind: location.kind,
-          latitude: location.latitude,
-          longitude: location.longitude,
-          name: location.name || undefined,
-          address: location.address || undefined,
-          accuracyInMeters: location.accuracyInMeters,
-          sequenceNumber: location.sequenceNumber,
-          externalMessageId: key.id ? String(key.id) : undefined,
-          instance: instance || undefined,
-        },
+        payload,
         'location-echo',
       );
     } catch (e) {

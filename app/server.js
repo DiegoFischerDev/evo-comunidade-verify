@@ -17,9 +17,6 @@ const LOG_WEBHOOK = process.env.LOG_WEBHOOK === '1' || process.env.LOG_WEBHOOK =
 // com a OpenAI. Este receiver apenas reencaminha as mensagens de GRUPO recebidas para o endpoint
 // interno `POST /whatsapp-scan/ingest`, autenticando com o segredo partilhado.
 const COMMUNITY_API_URL = (process.env.COMMUNITY_API_URL || '').replace(/\/$/, '');
-const COMMUNITY_API_URL_FALLBACK = (
-  process.env.COMMUNITY_API_URL_FALLBACK || ''
-).replace(/\/$/, '');
 const COMMUNITY_INTERNAL_SECRET = process.env.COMMUNITY_INTERNAL_SECRET || '';
 
 app.get('/health', (_req, res) => {
@@ -65,51 +62,6 @@ function extractMedia(message) {
       caption: vid.caption || '',
     };
   }
-  return null;
-}
-
-/**
- * Extrai localização estática ou em tempo real de uma mensagem Evolution/Baileys.
- */
-function extractLocation(message) {
-  if (!message || typeof message !== 'object') return null;
-
-  const staticLoc = message.locationMessage;
-  if (staticLoc && typeof staticLoc === 'object') {
-    const latitude = staticLoc.degreesLatitude ?? staticLoc.latitude;
-    const longitude = staticLoc.degreesLongitude ?? staticLoc.longitude;
-    if (typeof latitude !== 'number' || typeof longitude !== 'number') return null;
-    return {
-      kind: 'static',
-      latitude,
-      longitude,
-      name: staticLoc.name ? String(staticLoc.name) : '',
-      address: staticLoc.address ? String(staticLoc.address) : '',
-    };
-  }
-
-  const liveLoc = message.liveLocationMessage;
-  if (liveLoc && typeof liveLoc === 'object') {
-    const latitude = liveLoc.degreesLatitude ?? liveLoc.latitude;
-    const longitude = liveLoc.degreesLongitude ?? liveLoc.longitude;
-    if (typeof latitude !== 'number' || typeof longitude !== 'number') return null;
-    return {
-      kind: 'live',
-      latitude,
-      longitude,
-      name: liveLoc.name ? String(liveLoc.name) : '',
-      address: liveLoc.address ? String(liveLoc.address) : '',
-      accuracyInMeters:
-        typeof liveLoc.accuracyInMeters === 'number'
-          ? liveLoc.accuracyInMeters
-          : undefined,
-      sequenceNumber:
-        typeof liveLoc.sequenceNumber === 'number'
-          ? liveLoc.sequenceNumber
-          : undefined,
-    };
-  }
-
   return null;
 }
 
@@ -170,61 +122,36 @@ function toUnixSeconds(value) {
   return undefined;
 }
 
-/** Evita reencaminhar o mesmo webhook duas vezes (Evolution duplicada / duas instâncias). */
-const locationEchoDedupe = new Map();
-const LOCATION_ECHO_DEDUPE_MS = 10 * 60 * 1000;
-
-function locationEchoDedupeKey(payload) {
-  const id = payload.externalMessageId;
-  // Uma resposta por mensagem WhatsApp (live location envia dezenas de updates no mesmo id).
-  if (id) return String(id);
-  return `${payload.chatJid}|${payload.locationKind}|${payload.latitude}|${payload.longitude}`;
-}
-
-function claimLocationEchoDedupe(key) {
-  if (!key) return true;
-  const now = Date.now();
-  for (const [k, ts] of locationEchoDedupe) {
-    if (now - ts > LOCATION_ECHO_DEDUPE_MS) locationEchoDedupe.delete(k);
-  }
-  if (locationEchoDedupe.has(key)) return false;
-  locationEchoDedupe.set(key, now);
-  return true;
-}
-
-/** Envia a mensagem a um endpoint interno do backend; tenta URL principal e fallback. */
+/** Envia a mensagem ao endpoint interno do backend (prod). */
 async function forwardToBackendPath(path, payload, label) {
-  const targets = [COMMUNITY_API_URL, COMMUNITY_API_URL_FALLBACK].filter(Boolean);
-  if (!targets.length || !COMMUNITY_INTERNAL_SECRET) {
+  if (!COMMUNITY_API_URL || !COMMUNITY_INTERNAL_SECRET) {
     if (LOG_WEBHOOK) {
       console.log(`[wa-verify] ${label}: backend não configurado (COMMUNITY_API_URL/SECRET)`);
     }
     return;
   }
-  for (const base of targets) {
-    try {
-      const res = await fetch(`${base}${path}`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-internal-secret': COMMUNITY_INTERNAL_SECRET,
-        },
-        body: JSON.stringify(payload),
-      });
-      if (res.ok) {
-        if (LOG_WEBHOOK) {
-          const body = await res.json().catch(() => ({}));
-          console.log(`[wa-verify] ${label} forwarded`, body && body.status);
-        }
-        return;
-      }
+  try {
+    const res = await fetch(`${COMMUNITY_API_URL}${path}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-internal-secret': COMMUNITY_INTERNAL_SECRET,
+      },
+      body: JSON.stringify(payload),
+    });
+    if (res.ok) {
       if (LOG_WEBHOOK) {
-        console.log(`[wa-verify] ${label} backend respondeu`, res.status, 'em', base);
+        const body = await res.json().catch(() => ({}));
+        console.log(`[wa-verify] ${label} forwarded`, body && body.status);
       }
-    } catch (e) {
-      if (LOG_WEBHOOK) {
-        console.log(`[wa-verify] ${label} erro ao reencaminhar para`, base, e && e.message);
-      }
+      return;
+    }
+    if (LOG_WEBHOOK) {
+      console.log(`[wa-verify] ${label} backend respondeu`, res.status);
+    }
+  } catch (e) {
+    if (LOG_WEBHOOK) {
+      console.log(`[wa-verify] ${label} erro ao reencaminhar`, e && e.message);
     }
   }
 }
@@ -232,66 +159,6 @@ async function forwardToBackendPath(path, payload, label) {
 async function forwardToBackend(payload) {
   await forwardToBackendPath('/whatsapp-scan/ingest', payload, 'scan');
   await forwardToBackendPath('/job-offers/whatsapp/ingest', payload, 'job-offers');
-}
-
-/** Reencaminha localizações recebidas (DM ou grupo) para eco de teste no backend. */
-async function handleLocationEcho(body) {
-  const instance = body && body.instance ? String(body.instance) : '';
-  const events = extractMessageEvents(body);
-  for (const item of events) {
-    try {
-      const key = item && item.key ? item.key : {};
-      if (key.fromMe === true) continue;
-
-      const chatJid = String(key.remoteJid || '');
-      if (!chatJid) continue;
-
-      const location = extractLocation(item.message);
-      if (!location) continue;
-
-      const senderNumber = chatJid.endsWith('@g.us')
-        ? extractSenderPhone(key, item, body)
-        : canonicalPhoneDigits(phoneDigitsFromJidOrPhone(chatJid));
-
-      if (LOG_WEBHOOK) {
-        console.log(
-          `[wa-verify] location-echo kind=${location.kind} chat=${chatJid} lat=${location.latitude} lng=${location.longitude}`,
-        );
-      }
-
-      const payload = {
-        chatJid,
-        senderNumber: senderNumber || undefined,
-        locationKind: location.kind,
-        latitude: location.latitude,
-        longitude: location.longitude,
-        name: location.name || undefined,
-        address: location.address || undefined,
-        accuracyInMeters: location.accuracyInMeters,
-        sequenceNumber: location.sequenceNumber,
-        externalMessageId: key.id ? String(key.id) : undefined,
-        instance: instance || undefined,
-      };
-
-      const dedupeKey = locationEchoDedupeKey(payload);
-      if (!claimLocationEchoDedupe(dedupeKey)) {
-        if (LOG_WEBHOOK) {
-          console.log('[wa-verify] location-echo ignorado (duplicado)', dedupeKey);
-        }
-        continue;
-      }
-
-      await forwardToBackendPath(
-        '/whatsapp/location-echo/ingest',
-        payload,
-        'location-echo',
-      );
-    } catch (e) {
-      if (LOG_WEBHOOK) {
-        console.log('[wa-verify] location-echo erro', e && e.message);
-      }
-    }
-  }
 }
 
 /** Normaliza o(s) evento(s) de mensagem para um array de `{ data }`. */
@@ -402,7 +269,6 @@ function evolutionWebhookHandler(req, res) {
   }
 
   void handleScan(req.body);
-  void handleLocationEcho(req.body);
   return res.json({ ok: true });
 }
 
@@ -410,6 +276,6 @@ app.post(/^\/webhook\/evolution(\/.*)?$/, evolutionWebhookHandler);
 
 app.listen(PORT, () => {
   console.log(
-    `[wa-verify] listening on :${PORT} (scan + location-echo forwarder ativo)`,
+    `[wa-verify] listening on :${PORT} (scan forwarder ativo)`,
   );
 });

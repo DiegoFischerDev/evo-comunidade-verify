@@ -89,6 +89,6 @@ jobs:
             fi
             docker compose pull receiver
             docker compose up -d --force-recreate receiver
-            docker exec wa-verify-receiver-1 grep -q handleLocationEcho /app/server.js \
-              && echo "Receiver OK (location-echo presente)" \
-              || (echo "AVISO: server.js sem handleLocationEcho" && exit 1)
+            docker exec wa-verify-receiver-1 grep -q handleScan /app/server.js \
+              && echo "Receiver OK" \
+              || (echo "AVISO: server.js inválido" && exit 1)

@@ -28,6 +28,7 @@ Projeto simples para **confirmar contas via WhatsApp** usando a **Evolution API*
 - `WEBHOOK_SECRET`: segredo para validar chamadas do webhook (o header HTTP tem de ser **exactamente** este valor)
 - `WHATSAPP_INBOUND_DEBOUNCE_MS` (opcional): milissegundos de espera **só enquanto o texto acumulado ainda não contém um código de verificação completo** (default **10000**). Assim que o texto (numa ou várias mensagens) permitir extrair o código, a confirmação no backend corre **de imediato**, sem esperar esta janela.
 - `LOG_WEBHOOK=1`: regista no stdout o `event` e as chaves de `data` (útil se a ativação não disparar — confirma se o Evolution envia `messages.upsert` e texto extraído).
+- **Eco de localização (teste):** quando alguém envia pin ou live location (DM ou grupo), o receiver reencaminha para `POST /whatsapp/location-echo/ingest` no backend. Ativar no backend com `LOCATION_ECHO_ENABLED=1` (mesmo `COMMUNITY_INTERNAL_SECRET`).
 
 ### A conta não ativa após enviar o WhatsApp
 

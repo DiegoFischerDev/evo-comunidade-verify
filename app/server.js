@@ -68,6 +68,51 @@ function extractMedia(message) {
   return null;
 }
 
+/**
+ * Extrai localização estática ou em tempo real de uma mensagem Evolution/Baileys.
+ */
+function extractLocation(message) {
+  if (!message || typeof message !== 'object') return null;
+
+  const staticLoc = message.locationMessage;
+  if (staticLoc && typeof staticLoc === 'object') {
+    const latitude = staticLoc.degreesLatitude ?? staticLoc.latitude;
+    const longitude = staticLoc.degreesLongitude ?? staticLoc.longitude;
+    if (typeof latitude !== 'number' || typeof longitude !== 'number') return null;
+    return {
+      kind: 'static',
+      latitude,
+      longitude,
+      name: staticLoc.name ? String(staticLoc.name) : '',
+      address: staticLoc.address ? String(staticLoc.address) : '',
+    };
+  }
+
+  const liveLoc = message.liveLocationMessage;
+  if (liveLoc && typeof liveLoc === 'object') {
+    const latitude = liveLoc.degreesLatitude ?? liveLoc.latitude;
+    const longitude = liveLoc.degreesLongitude ?? liveLoc.longitude;
+    if (typeof latitude !== 'number' || typeof longitude !== 'number') return null;
+    return {
+      kind: 'live',
+      latitude,
+      longitude,
+      name: liveLoc.name ? String(liveLoc.name) : '',
+      address: liveLoc.address ? String(liveLoc.address) : '',
+      accuracyInMeters:
+        typeof liveLoc.accuracyInMeters === 'number'
+          ? liveLoc.accuracyInMeters
+          : undefined,
+      sequenceNumber:
+        typeof liveLoc.sequenceNumber === 'number'
+          ? liveLoc.sequenceNumber
+          : undefined,
+    };
+  }
+
+  return null;
+}
+
 /** Apenas dígitos (remove @s.whatsapp.net, +, espaços, etc.). */
 function digitsOnly(value) {
   return String(value || '').replace(/\D+/g, '');
@@ -167,6 +212,56 @@ async function forwardToBackend(payload) {
   await forwardToBackendPath('/job-offers/whatsapp/ingest', payload, 'job-offers');
 }
 
+/** Reencaminha localizações recebidas (DM ou grupo) para eco de teste no backend. */
+async function handleLocationEcho(body) {
+  const instance = body && body.instance ? String(body.instance) : '';
+  const events = extractMessageEvents(body);
+  for (const item of events) {
+    try {
+      const key = item && item.key ? item.key : {};
+      if (key.fromMe === true) continue;
+
+      const chatJid = String(key.remoteJid || '');
+      if (!chatJid) continue;
+
+      const location = extractLocation(item.message);
+      if (!location) continue;
+
+      const senderNumber = chatJid.endsWith('@g.us')
+        ? extractSenderPhone(key, item, body)
+        : canonicalPhoneDigits(phoneDigitsFromJidOrPhone(chatJid));
+
+      if (LOG_WEBHOOK) {
+        console.log(
+          `[wa-verify] location-echo kind=${location.kind} chat=${chatJid} lat=${location.latitude} lng=${location.longitude}`,
+        );
+      }
+
+      await forwardToBackendPath(
+        '/whatsapp/location-echo/ingest',
+        {
+          chatJid,
+          senderNumber: senderNumber || undefined,
+          locationKind: location.kind,
+          latitude: location.latitude,
+          longitude: location.longitude,
+          name: location.name || undefined,
+          address: location.address || undefined,
+          accuracyInMeters: location.accuracyInMeters,
+          sequenceNumber: location.sequenceNumber,
+          externalMessageId: key.id ? String(key.id) : undefined,
+          instance: instance || undefined,
+        },
+        'location-echo',
+      );
+    } catch (e) {
+      if (LOG_WEBHOOK) {
+        console.log('[wa-verify] location-echo erro', e && e.message);
+      }
+    }
+  }
+}
+
 /** Normaliza o(s) evento(s) de mensagem para um array de `{ data }`. */
 function extractMessageEvents(body) {
   if (!body || typeof body !== 'object') return [];
@@ -262,11 +357,14 @@ function evolutionWebhookHandler(req, res) {
   }
   // Processamento assíncrono (best-effort) — respondemos já 200 para a Evolution não reentregar.
   void handleScan(req.body);
+  void handleLocationEcho(req.body);
   return res.json({ ok: true });
 }
 
 app.post(/^\/webhook\/evolution(\/.*)?$/, evolutionWebhookHandler);
 
 app.listen(PORT, () => {
-  console.log(`[wa-verify] listening on :${PORT} (whatsapp-scan forwarder ativo)`);
+  console.log(
+    `[wa-verify] listening on :${PORT} (scan + location-echo forwarder ativo)`,
+  );
 });

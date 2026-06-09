@@ -24,7 +24,8 @@ services:
     restart: unless-stopped
 
   evolution:
-    image: evoapicloud/evolution-api:homolog
+    # Versão fixa (não usar :homolog — tag móvel; v2.4.0 homolog tinha erros Prisma messageType).
+    image: evoapicloud/evolution-api:v2.3.7
     restart: unless-stopped
     logging:
       driver: json-file
@@ -35,6 +36,10 @@ services:
       AUTHENTICATION_API_KEY: ${EVOLUTION_API_KEY}
       DATABASE_PROVIDER: postgresql
       DATABASE_CONNECTION_URI: postgresql://evolution:${EVOLUTION_DB_PASSWORD}@evolution_db:5432/evolution?schema=public
+      # Webhooks bastam para scan/verificação; poupa CPU/IO no Postgres da Evolution.
+      DATABASE_SAVE_DATA_NEW_MESSAGE: "false"
+      DATABASE_SAVE_MESSAGE_UPDATE: "false"
+      DATABASE_SAVE_DATA_HISTORIC: "false"
 
       CACHE_REDIS_ENABLED: "true"
       CACHE_REDIS_URI: redis://evolution_redis:6379/6

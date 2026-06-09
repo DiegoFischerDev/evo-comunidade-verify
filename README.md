@@ -12,7 +12,7 @@ Projeto simples para **confirmar contas via WhatsApp** usando a **Evolution API*
 
 ### Componentes....
 
-- **Evolution API**: `evoapicloud/evolution-api:homolog`. O CI **não** reinicia a Evolution — só o receiver
+- **Evolution API**: `evoapicloud/evolution-api:v2.3.7` (versão fixa; evitar `:homolog`, tag instável). O CI **não** reinicia a Evolution — só o receiver
 - **Webhook receiver**: `app/` (Node/Express)
 
 ### Variáveis importantes (.env na VPS)

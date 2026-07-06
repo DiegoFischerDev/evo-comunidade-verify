@@ -1,102 +1,118 @@
-## WhatsApp Verification (Evolution API)
+## WhatsApp Evolution (wa-verify)
 
-Projeto simples para **confirmar contas via WhatsApp** usando a **Evolution API**.
+Ponte entre a **Evolution API** e o backend da Comunidade. Recebe webhooks `messages.upsert`, filtra mensagens de **grupos** WhatsApp e reencaminha-as para ingestão no NestJS.
 
-### Como funciona (visão geral)
+> O nome histórico do projeto (`wa-verify`) e a pasta `whatsapp-evolution-verify` remetem a um fluxo antigo de **confirmação de conta por código** — já não existe. Hoje o receiver só faz forward de mensagens de grupo.
 
-1. O utilizador cria conta na Comunidade e recebe um **código** (ex.: `99999`)
-2. O frontend abre um link para WhatsApp com mensagem pré-definida:
-   - `Gostaria de confirmar meu acesso à Comunidade Rafa Portugal com o codigo: 99999`
-3. A Evolution API recebe a mensagem e envia um webhook `MESSAGES_UPSERT` para este serviço.
-4. Este serviço valida a mensagem, extrai o código e chama a API do backend da Comunidade para **confirmar a conta** e gravar o WhatsApp que enviou o código.
+### Como funciona
 
-### Componentes....
+1. A Evolution API recebe mensagens nos grupos monitorizados e envia webhook `MESSAGES_UPSERT` para este serviço.
+2. O **receiver** (`app/server.js`) ignora eventos de ruído (presence, contacts, chats, etc.) e processa apenas mensagens de grupo (`@g.us`) que não sejam `fromMe`.
+3. Para cada mensagem, extrai remetente, texto e/ou mídia (imagem/vídeo, com base64 quando o Webhook Base64 está ativo).
+4. Reencaminha ao backend com `COMMUNITY_INTERNAL_SECRET` no header `x-internal-secret`:
+   - `POST /whatsapp-scan/ingest` — scan de imóveis (classificação IA + rascunho)
+   - `POST /job-offers/whatsapp/ingest` — ofertas de trabalho
 
-- **Evolution API**: `evoapicloud/evolution-api:v2.3.7` (versão fixa; evitar `:homolog`, tag instável). O CI **não** reinicia a Evolution — só o receiver
-- **Webhook receiver**: `app/` (Node/Express)
+A configuração dos grupos monitorizados, filtros de remetente e lógica de negócio ficam no **backend** (`whatsapp-scan`, `job-offers`), não neste receiver.
+
+### Componentes
+
+- **Evolution API**: `evoapicloud/evolution-api:v2.3.7` (versão fixa; evitar `:homolog`). O CI **não** reinicia a Evolution — só o receiver.
+- **Webhook receiver**: `app/` (Node/Express), imagem `ghcr.io/diegofischerdev/wa-verify-receiver:main`
 
 ### Variáveis importantes (.env na VPS)
 
-- `EVOLUTION_API_KEY`: chave para usar a Evolution
-- `EVOLUTION_INSTANCE`: instância principal (ex.: `comunidade`)
-- `EVOLUTION_INSTANCE_SECONDARY`: instância secundária (opcional, ex.: `comunidade-2`)
-- `EVOLUTION_CHATBOT_INSTANCES`: lista CSV de instâncias permitidas para o chatbot (ex.: `comunidade,comunidade-2`). Se vazio, usa principal + secundária.
-- `EVOLUTION_FAILOVER_ENABLED`: `1` (padrão) para tentar envio automático na instância reserva quando a principal falhar.
+**Receiver**
+
 - `WEBHOOK_PUBLIC_URL`: URL pública do receiver (ex.: `https://wa-verify.seudominio.com/webhook/evolution`)
-- `COMMUNITY_API_URL`: URL do backend da Comunidade (ex.: `https://api-comunidade...`)
-- `COMMUNITY_INTERNAL_SECRET`: segredo para autenticar chamadas internas
-- `WEBHOOK_SECRET`: segredo para validar chamadas do webhook (o header HTTP tem de ser **exactamente** este valor)
-- `WHATSAPP_INBOUND_DEBOUNCE_MS` (opcional): milissegundos de espera **só enquanto o texto acumulado ainda não contém um código de verificação completo** (default **10000**). Assim que o texto (numa ou várias mensagens) permitir extrair o código, a confirmação no backend corre **de imediato**, sem esperar esta janela.
-- `LOG_WEBHOOK=1`: regista no stdout o `event` e as chaves de `data` (útil se a ativação não disparar — confirma se o Evolution envia `messages.upsert` e texto extraído).
+- `WEBHOOK_SECRET`: segredo validado no header `x-webhook-secret`
+- `COMMUNITY_API_URL`: URL do backend (ex.: `https://api-comunidade...`)
+- `COMMUNITY_INTERNAL_SECRET`: segredo partilhado com o backend (igual ao `.env` do NestJS)
+- `LOG_WEBHOOK=1`: regista eventos e reencaminhamentos no stdout (debug)
+- `WEBHOOK_BODY_LIMIT` (opcional): limite do body JSON (default **256mb**; mídia em base64)
 
-### A conta não ativa após enviar o WhatsApp
+**Evolution API**
 
-1. Se a mensagem já inclui o código completo, a confirmação deve ser **quase imediata**. Só há espera (debounce, 10 s por defeito) quando o texto ainda **não** forma um código reconhecível — por exemplo, texto partido em várias mensagens que só juntos completam o padrão.
-2. No servidor do `wa-verify`, ver logs: deve aparecer `[wa-verify] buffer` ao receber texto e `[wa-verify] flush` / `conta confirmada` após o silêncio.
-3. Se só aparecer `ignored: true`, o payload da Evolution pode não bater com o extrator: ativa `LOG_WEBHOOK=1` e confere a estrutura; confirma também `COMMUNITY_API_URL` e `COMMUNITY_INTERNAL_SECRET` iguais ao backend.
-4. Confirma que o webhook da Evolution aponta para o path correto (ex. `/webhook/evolution`) e que o Nginx injeta `x-webhook-secret` se usares `WEBHOOK_SECRET`.
+- `EVOLUTION_API_KEY`: chave da Evolution
+- `EVOLUTION_DB_PASSWORD`: password do Postgres da Evolution
+- `EVOLUTION_INSTANCE`: instância principal (ex.: `comunidade`)
+- `EVOLUTION_INSTANCE_SECONDARY`: instância secundária (opcional)
+- `EVOLUTION_API_URL`: URL interna da Evolution (usada pelo backend para buscar mídia quando o webhook não traz base64)
 
 ### Webhook, Nginx e header `x-webhook-secret`
 
-O receiver compara o header **`x-webhook-secret`** com **`WEBHOOK_SECRET`** do ambiente. A Evolution normalmente **não** envia esse header.
+O receiver compara o header **`x-webhook-secret`** com **`WEBHOOK_SECRET`**. A Evolution normalmente **não** envia esse header.
 
-Em produção, o Nginx em `wa-verify` deve fazer **`proxy_set_header x-webhook-secret "<mesmo valor que WEBHOOK_SECRET>";`** no `location` que faz `proxy_pass` para o receiver. Assim os pedidos HTTPS funcionam **sem** colocares o segredo à mão no `curl`.
+Em produção, o Nginx em `wa-verify` deve fazer **`proxy_set_header x-webhook-secret "<mesmo valor que WEBHOOK_SECRET>";`** no `location` que faz `proxy_pass` para o receiver.
 
-Se a Evolution logar **`413`** / **`Payload Too Large`**, o corpo do webhook excede o limite. No **mesmo** `server` ou `location /` do `wa-verify`, adiciona:
+Se a Evolution logar **`413`** / **`Payload Too Large`**, aumenta o limite no Nginx:
 
 ```nginx
-client_max_body_size 25M;
+client_max_body_size 256M;
 ```
 
-(Valor alinhado com o limite JSON do `server.js`, `25mb`.)
+**Não uses** placeholder tipo `SEU_WEBHOOK_SECRET_DO_ENV` no header — resulta em **403 Forbidden**.
 
-**Não uses** texto placeholder tipo `SEU_WEBHOOK_SECRET_DO_ENV` no header: isso **não** é o valor real e resulta em **403 Forbidden**.
+### Troubleshooting
+
+1. Com `LOG_WEBHOOK=1`, nos logs deve aparecer `[wa-verify] webhook messages.upsert` e, ao reencaminhar, `scan forwarded` / `job-offers forwarded`.
+2. Se aparecer `ignored: <evento>`, o webhook não é `messages.upsert` — comportamento esperado para presence/contacts/etc.
+3. Mensagens de grupo ignoradas no backend (`ignored_group_not_monitored`): o `groupJid` não está configurado como grupo ativo em `whatsapp-scan`.
+4. Confirma `COMMUNITY_API_URL` e `COMMUNITY_INTERNAL_SECRET` **iguais** ao backend.
+5. Confirma que o webhook global da Evolution aponta para `/webhook/evolution` e que o Nginx injeta `x-webhook-secret`.
 
 ### Testar o receiver na VPS
 
-**Pelo domínio (igual à Evolution; Nginx injeta o segredo):**
+**Health check:**
 
 ```bash
-curl -i -X POST "https://wa-verify.seudominio.com/webhook/evolution/connection-update" \
+curl -s "http://127.0.0.1:13100/health"
+```
+
+**Pelo domínio (Nginx injeta o segredo):**
+
+```bash
+curl -i -X POST "https://wa-verify.seudominio.com/webhook/evolution/messages-upsert" \
   -H 'content-type: application/json' \
   --data '{}'
 ```
 
-**Direto à porta local** (sem Nginx): tens de passar o segredo **real** vindo do `.env`:
+**Direto à porta local** (sem Nginx): passa o segredo real do `.env`:
 
 ```bash
 cd /opt/wa-verify
 set -a && . ./.env && set +a
 
-curl -i -X POST "http://127.0.0.1:13100/webhook/evolution/connection-update" \
+curl -i -X POST "http://127.0.0.1:13100/webhook/evolution/messages-upsert" \
   -H 'content-type: application/json' \
   -H "x-webhook-secret: ${WEBHOOK_SECRET}" \
   --data '{}'
 ```
 
-Para simular uma mensagem com código (deve bater com o texto que o registo envia ao WhatsApp):
+**Simular mensagem de grupo** (deve reencaminhar para o backend se `COMMUNITY_*` estiver configurado):
 
 ```bash
 curl -i -X POST "https://wa-verify.seudominio.com/webhook/evolution/messages-upsert" \
   -H 'content-type: application/json' \
-  --data '{"data":{"key":{"remoteJid":"351999999999@s.whatsapp.net"},"message":{"conversation":"codigo: 12345"}}}'
+  --data '{
+    "event": "messages.upsert",
+    "instance": "comunidade",
+    "data": {
+      "key": {
+        "remoteJid": "120363000000000000@g.us",
+        "fromMe": false,
+        "id": "TESTMSG001",
+        "participant": "351912345678@s.whatsapp.net"
+      },
+      "message": { "conversation": "T3 apartamento Lisboa 250000" },
+      "messageTimestamp": 1700000000
+    }
+  }'
 ```
 
 ### Deploy na VPS (resumo)
 
 `/opt/wa-verify` usa `docker-compose.yml` + `.env` (não precisa da pasta `app/`). O **receiver** vem de `ghcr.io/diegofischerdev/wa-verify-receiver:main` (build no GitHub Actions).
-
-### Deploy falhou com `502 Bad Gateway` no push ao GHCR
-
-Erro **transitório** do GitHub Container Registry (o build da imagem já terminou; só o upload falhou).
-
-1. **Re-run** do workflow em Actions → «Deploy WhatsApp verify (main)» → *Re-run failed jobs*
-2. Ou dispara manualmente: Actions → *Run workflow*
-3. O workflow tenta o push **até 4 vezes** com intervalo crescente (45s, 90s, 135s)
-
-Se persistir após várias horas, verifica [GitHub Status](https://www.githubstatus.com/) (Packages / GHCR).
-
-Se o pull na VPS falhar com **unauthorized**, torna o package público no GitHub ou adiciona o secret `GHCR_PULL_TOKEN` (PAT com `read:packages`) no repositório.
 
 ```bash
 cd /opt/wa-verify
@@ -115,8 +131,15 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build receiv
 | Situação | Comando |
 |----------|---------|
 | Repositório completo com `docker-compose.yml` na raiz (recomendado) | `docker compose ps` / `docker compose logs -f receiver` |
-| Só existe `deploy/docker-compose.vps.yml` (clone antigo ou path diferente) | `docker compose -f deploy/docker-compose.vps.yml ps` (a partir da **raiz** do repo) |
-| Erro `open .../deploy/docker-compose.vps.yml: no such file or directory` | Na VPS não há pasta `deploy/`. Usa o `docker-compose.yml` na raiz: `ls -la /opt/wa-verify/*.yml` e `docker compose` **sem** `-f deploy/...` |
+| Só existe `deploy/docker-compose.vps.yml` | `docker compose -f deploy/docker-compose.vps.yml ps` (a partir da **raiz** do repo) |
+| Erro `open .../deploy/docker-compose.vps.yml: no such file or directory` | Na VPS usa o `docker-compose.yml` na raiz: `ls -la /opt/wa-verify/*.yml` |
 
-Os dois ficheiros no repositório descrevem os mesmos serviços; o da raiz usa `build.context: ./app`, o de `deploy/` usa `../app` porque o ficheiro está dentro de `deploy/`.
+### Deploy falhou com `502 Bad Gateway` no push ao GHCR
 
+Erro **transitório** do GitHub Container Registry.
+
+1. **Re-run** do workflow em Actions → «Deploy WhatsApp verify (main)» → *Re-run failed jobs*
+2. Ou dispara manualmente: Actions → *Run workflow*
+3. O workflow tenta o push **até 4 vezes** com intervalo crescente (45s, 90s, 135s)
+
+Se o pull na VPS falhar com **unauthorized**, torna o package público no GitHub ou adiciona o secret `GHCR_PULL_TOKEN` (PAT com `read:packages`).

@@ -28,6 +28,23 @@ function getChatbotInstances() {
     .filter(Boolean);
 }
 
+/** Evolution reentrega o mesmo webhook — evita reencaminhar o gatilho duas vezes. */
+const recentChatbotForwards = new Map();
+const CHATBOT_DEDUP_MS = 10 * 60 * 1000;
+
+function shouldForwardChatbotTrigger(payload) {
+  const key =
+    payload.externalMessageId ||
+    `${payload.instance || ''}|${payload.recipientNumber}|${payload.text.trim().toLowerCase()}`;
+  const now = Date.now();
+  for (const [k, ts] of recentChatbotForwards) {
+    if (now - ts > CHATBOT_DEDUP_MS) recentChatbotForwards.delete(k);
+  }
+  if (recentChatbotForwards.has(key)) return false;
+  recentChatbotForwards.set(key, now);
+  return true;
+}
+
 app.get('/health', (_req, res) => {
   res.json({ ok: true, app: 'wa-verify', time: new Date().toISOString() });
 });
@@ -318,15 +335,24 @@ async function handleChatbot(body) {
         );
       }
 
+      const triggerPayload = {
+        recipientNumber,
+        text: String(text).slice(0, 8000),
+        fromMe: true,
+        instance: instance || undefined,
+        externalMessageId: key.id ? String(key.id) : undefined,
+      };
+
+      if (!shouldForwardChatbotTrigger(triggerPayload)) {
+        if (LOG_WEBHOOK) {
+          console.log('[wa-verify] chatbot trigger ignored_duplicate', triggerPayload.externalMessageId || recipientNumber);
+        }
+        continue;
+      }
+
       await forwardToBackendPath(
         '/rafacall/whatsapp/trigger',
-        {
-          recipientNumber,
-          text: String(text).slice(0, 8000),
-          fromMe: true,
-          instance: instance || undefined,
-          externalMessageId: key.id ? String(key.id) : undefined,
-        },
+        triggerPayload,
         'rafacall-trigger',
       );
     } catch (e) {

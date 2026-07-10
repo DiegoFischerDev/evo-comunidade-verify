@@ -19,6 +19,15 @@ const LOG_WEBHOOK = process.env.LOG_WEBHOOK === '1' || process.env.LOG_WEBHOOK =
 const COMMUNITY_API_URL = (process.env.COMMUNITY_API_URL || '').replace(/\/$/, '');
 const COMMUNITY_INTERNAL_SECRET = process.env.COMMUNITY_INTERNAL_SECRET || '';
 
+/** Instâncias Evolution que processam gatilhos em conversas diretas (ex.: «link para agendar chamada»). */
+function getChatbotInstances() {
+  const raw = process.env.EVOLUTION_CHATBOT_INSTANCES || '';
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 app.get('/health', (_req, res) => {
   res.json({ ok: true, app: 'wa-verify', time: new Date().toISOString() });
 });
@@ -110,6 +119,29 @@ function extractSenderPhone(key, item, body) {
     if (d) return canonicalPhoneDigits(d);
   }
   return '';
+}
+
+/** Contacto da conversa direta (DM). Com fromMe=true, remoteJid é o destinatário. */
+function extractDirectContactPhone(key) {
+  const remoteJid = String((key && key.remoteJid) || '');
+  if (!remoteJid || remoteJid.endsWith('@g.us')) return '';
+  const candidates = [
+    key && key.remoteJidAlt,
+    key && key.senderPn,
+    key && key.participantAlt,
+    remoteJid,
+  ];
+  for (const raw of candidates) {
+    const d = phoneDigitsFromJidOrPhone(raw);
+    if (d) return canonicalPhoneDigits(d);
+  }
+  return '';
+}
+
+function isDirectChatJid(remoteJid) {
+  const jid = String(remoteJid || '');
+  if (!jid || jid.endsWith('@g.us')) return false;
+  return jid.endsWith('@s.whatsapp.net') || jid.endsWith('@lid');
 }
 
 /** messageTimestamp da Evolution → segundos Unix (number | string | Long {low}). */
@@ -247,6 +279,64 @@ async function handleScan(body) {
   }
 }
 
+async function handleChatbot(body) {
+  const instance = body && body.instance ? String(body.instance) : '';
+  const chatbotInstances = getChatbotInstances();
+  if (!chatbotInstances.length) return;
+  if (!chatbotInstances.includes(instance)) return;
+
+  const events = extractMessageEvents(body);
+  for (const item of events) {
+    try {
+      const key = item && item.key ? item.key : {};
+      const remoteJid = String(key.remoteJid || '');
+      if (!isDirectChatJid(remoteJid)) continue;
+      // Só mensagens enviadas pelo admin (fromMe) — gatilho manual na conversa com o cliente.
+      if (key.fromMe !== true) continue;
+
+      const text = extractMessageText(item.message);
+      if (!text || !text.trim()) continue;
+
+      const recipientNumber = extractDirectContactPhone(key);
+      if (!recipientNumber) {
+        if (LOG_WEBHOOK) {
+          console.log(
+            '[wa-verify] chatbot: destinatário não identificado',
+            JSON.stringify({
+              remoteJid,
+              remoteJidAlt: key.remoteJidAlt,
+              senderPn: key.senderPn,
+            }),
+          );
+        }
+        continue;
+      }
+
+      if (LOG_WEBHOOK) {
+        console.log(
+          `[wa-verify] chatbot admin trigger instance=${instance} to=${recipientNumber}`,
+        );
+      }
+
+      await forwardToBackendPath(
+        '/rafacall/whatsapp/trigger',
+        {
+          recipientNumber,
+          text: String(text).slice(0, 8000),
+          fromMe: true,
+          instance: instance || undefined,
+          externalMessageId: key.id ? String(key.id) : undefined,
+        },
+        'rafacall-trigger',
+      );
+    } catch (e) {
+      if (LOG_WEBHOOK) {
+        console.log('[wa-verify] chatbot erro ao processar evento', e && e.message);
+      }
+    }
+  }
+}
+
 function normalizeWebhookEventName(body) {
   return String(body?.event || '')
     .toLowerCase()
@@ -269,6 +359,7 @@ function evolutionWebhookHandler(req, res) {
   }
 
   void handleScan(req.body);
+  void handleChatbot(req.body);
   return res.json({ ok: true });
 }
 
@@ -276,6 +367,6 @@ app.post(/^\/webhook\/evolution(\/.*)?$/, evolutionWebhookHandler);
 
 app.listen(PORT, () => {
   console.log(
-    `[wa-verify] listening on :${PORT} (scan forwarder ativo)`,
+    `[wa-verify] listening on :${PORT} (scan + chatbot forwarder ativo)`,
   );
 });

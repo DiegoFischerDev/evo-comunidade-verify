@@ -38,6 +38,7 @@ A configuração dos grupos monitorizados, filtros de remetente e lógica de neg
 - `EVOLUTION_INSTANCE`: instância principal (ex.: `comunidade`)
 - `EVOLUTION_INSTANCE_SECONDARY`: instância secundária (opcional)
 - `EVOLUTION_API_URL`: URL interna da Evolution (usada pelo backend para buscar mídia quando o webhook não traz base64)
+- `EVOLUTION_CHATBOT_INSTANCES`: instâncias que processam gatilhos em **conversas diretas** (ex.: `comunidade MEO`). Quando o **admin** envia «link para agendar chamada» numa DM (`fromMe: true`), o backend responde ao **cliente** com o link `/agendar?whatsapp=…&name=…`.
 
 ### Webhook, Nginx e header `x-webhook-secret`
 

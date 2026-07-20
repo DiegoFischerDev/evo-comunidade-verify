@@ -38,7 +38,9 @@ A configuração dos grupos monitorizados, filtros de remetente e lógica de neg
 - `EVOLUTION_INSTANCE`: instância principal (ex.: `comunidade`)
 - `EVOLUTION_INSTANCE_SECONDARY`: instância secundária (opcional)
 - `EVOLUTION_API_URL`: URL interna da Evolution (usada pelo backend para buscar mídia quando o webhook não traz base64)
-- `EVOLUTION_CHATBOT_INSTANCES`: instâncias que processam gatilhos em **conversas diretas** (ex.: `comunidade MEO`). Quando o **admin** envia «link para agendar chamada» numa DM (`fromMe: true`), o backend responde ao **cliente** com o link `/agendar?whatsapp=…&name=…`.
+- `EVOLUTION_CHATBOT_INSTANCES`: instâncias que processam gatilhos em **conversas diretas** (ex.: `comunidade MEO`).
+  - **Admin** (`fromMe: true`): «link para agendar chamada» → `POST /rafacall/whatsapp/trigger` (link `/agendar`).
+  - **Cliente** (`fromMe: false`): automações do admin → `POST /whatsapp-automations/inbound` (áudio PTT / texto / imagem; cooldown 24h).
 
 ### Webhook, Nginx e header `x-webhook-secret`
 

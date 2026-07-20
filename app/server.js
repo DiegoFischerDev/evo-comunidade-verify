@@ -33,9 +33,12 @@ const recentChatbotForwards = new Map();
 const CHATBOT_DEDUP_MS = 10 * 60 * 1000;
 
 function shouldForwardChatbotTrigger(payload) {
+  const text = String(payload.text || '').trim().toLowerCase();
+  const contact =
+    payload.recipientNumber || payload.senderNumber || '';
   const key =
     payload.externalMessageId ||
-    `${payload.instance || ''}|${payload.recipientNumber}|${payload.text.trim().toLowerCase()}`;
+    `${payload.instance || ''}|${contact}|${text}`;
   const now = Date.now();
   for (const [k, ts] of recentChatbotForwards) {
     if (now - ts > CHATBOT_DEDUP_MS) recentChatbotForwards.delete(k);
@@ -308,52 +311,91 @@ async function handleChatbot(body) {
       const key = item && item.key ? item.key : {};
       const remoteJid = String(key.remoteJid || '');
       if (!isDirectChatJid(remoteJid)) continue;
-      // Só mensagens enviadas pelo admin (fromMe) — gatilho manual na conversa com o cliente.
-      if (key.fromMe !== true) continue;
 
       const text = extractMessageText(item.message);
       if (!text || !text.trim()) continue;
 
-      const recipientNumber = extractDirectContactPhone(key);
-      if (!recipientNumber) {
+      const contactNumber = extractDirectContactPhone(key);
+      if (!contactNumber) {
         if (LOG_WEBHOOK) {
           console.log(
-            '[wa-verify] chatbot: destinatário não identificado',
+            '[wa-verify] chatbot: contacto não identificado',
             JSON.stringify({
               remoteJid,
               remoteJidAlt: key.remoteJidAlt,
               senderPn: key.senderPn,
+              fromMe: key.fromMe === true,
             }),
           );
         }
         continue;
       }
 
+      const externalMessageId = key.id ? String(key.id) : undefined;
+
+      // Admin (fromMe): gatilho manual «link para agendar chamada».
+      if (key.fromMe === true) {
+        if (LOG_WEBHOOK) {
+          console.log(
+            `[wa-verify] chatbot admin trigger instance=${instance} to=${contactNumber}`,
+          );
+        }
+
+        const triggerPayload = {
+          recipientNumber: contactNumber,
+          text: String(text).slice(0, 8000),
+          fromMe: true,
+          instance: instance || undefined,
+          externalMessageId,
+        };
+
+        if (!shouldForwardChatbotTrigger(triggerPayload)) {
+          if (LOG_WEBHOOK) {
+            console.log(
+              '[wa-verify] chatbot trigger ignored_duplicate',
+              externalMessageId || contactNumber,
+            );
+          }
+          continue;
+        }
+
+        await forwardToBackendPath(
+          '/rafacall/whatsapp/trigger',
+          triggerPayload,
+          'rafacall-trigger',
+        );
+        continue;
+      }
+
+      // Cliente (!fromMe): automações configuráveis no admin.
       if (LOG_WEBHOOK) {
         console.log(
-          `[wa-verify] chatbot admin trigger instance=${instance} to=${recipientNumber}`,
+          `[wa-verify] chatbot client inbound instance=${instance} from=${contactNumber}`,
         );
       }
 
-      const triggerPayload = {
-        recipientNumber,
+      const inboundPayload = {
+        senderNumber: contactNumber,
         text: String(text).slice(0, 8000),
-        fromMe: true,
+        fromMe: false,
         instance: instance || undefined,
-        externalMessageId: key.id ? String(key.id) : undefined,
+        externalMessageId,
       };
 
-      if (!shouldForwardChatbotTrigger(triggerPayload)) {
+      if (!shouldForwardChatbotTrigger(inboundPayload)) {
         if (LOG_WEBHOOK) {
-          console.log('[wa-verify] chatbot trigger ignored_duplicate', triggerPayload.externalMessageId || recipientNumber);
+          console.log(
+            '[wa-verify] chatbot inbound ignored_duplicate',
+            externalMessageId || contactNumber,
+          );
         }
         continue;
       }
 
       await forwardToBackendPath(
-        '/rafacall/whatsapp/trigger',
-        triggerPayload,
-        'rafacall-trigger',
+        '/whatsapp-automations/inbound',
+        inboundPayload,
+        'client-automation',
       );
     } catch (e) {
       if (LOG_WEBHOOK) {

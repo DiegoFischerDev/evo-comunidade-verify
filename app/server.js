@@ -77,6 +77,48 @@ function unwrapMessageContent(message) {
   );
 }
 
+function cloneWithoutMediaBytes(value, depth = 0) {
+  if (depth > 8 || value == null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) {
+    return value.slice(0, 40).map((item) => cloneWithoutMediaBytes(item, depth + 1));
+  }
+  const out = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (key === 'base64' || key === 'jpegThumbnail') continue;
+    out[key] = cloneWithoutMediaBytes(item, depth + 1);
+  }
+  return out;
+}
+
+/**
+ * A Evolution não grava a mensagem (DATABASE_SAVE_DATA_NEW_MESSAGE=false).
+ * O getBase64 precisa da própria nota, com mediaKey, e não só do id.
+ */
+function audioDownloadMessage(item) {
+  const key = item && item.key;
+  const message = item && item.message;
+  if (!key || !key.id || !message || typeof message !== 'object') return null;
+  const cleaned = cloneWithoutMediaBytes(message);
+  if (!cleaned || typeof cleaned !== 'object') return null;
+  const lookupKey = {
+    id: String(key.id),
+    remoteJid: key.remoteJid,
+    remoteJidAlt: key.remoteJidAlt,
+    fromMe: key.fromMe === true,
+    participant: key.participant,
+    participantAlt: key.participantAlt,
+    addressingMode: key.addressingMode,
+  };
+  for (const name of Object.keys(lookupKey)) {
+    if (lookupKey[name] === undefined || lookupKey[name] === null || lookupKey[name] === '') {
+      delete lookupKey[name];
+    }
+  }
+  lookupKey.id = String(key.id);
+  lookupKey.fromMe = key.fromMe === true;
+  return { key: lookupKey, message: cleaned };
+}
+
 /** Nota de voz (PTT) ou áudio. O ficheiro fica na Evolution; o backend é que o descarrega. */
 function extractAudio(message) {
   const content = unwrapMessageContent(message);
@@ -408,6 +450,7 @@ async function handleChatbot(body) {
         .trim()
         .slice(0, 80);
 
+      const mediaMessage = audio ? audioDownloadMessage(item) : null;
       const inboundPayload = audio
         ? {
             senderNumber: contactNumber,
@@ -416,6 +459,7 @@ async function handleChatbot(body) {
             fromMe: false,
             instance: instance || undefined,
             externalMessageId,
+            ...(mediaMessage ? { mediaMessage } : {}),
             ...(pushName ? { pushName } : {}),
           }
         : {

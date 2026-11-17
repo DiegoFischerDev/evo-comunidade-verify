@@ -380,7 +380,13 @@ async function handleChatbot(body) {
 
       const text = extractMessageText(item.message);
       const audio = extractAudio(item.message);
-      if ((!text || !text.trim()) && !audio) continue;
+      const media = extractMedia(item.message);
+      const content = unwrapMessageContent(item.message);
+      const hasDocument = Boolean(content && content.documentMessage);
+      const hasSticker = Boolean(content && content.stickerMessage);
+      const hasAdminMedia =
+        key.fromMe === true && (Boolean(media) || hasDocument || hasSticker);
+      if ((!text || !text.trim()) && !audio && !hasAdminMedia) continue;
 
       const contactNumber = extractDirectContactPhone(key);
       if (!contactNumber) {
@@ -400,18 +406,32 @@ async function handleChatbot(body) {
 
       const externalMessageId = key.id ? String(key.id) : undefined;
 
-      // Admin (fromMe): gatilho manual «link para agendar chamada». Nota de voz não dispara.
+      // Admin (fromMe): gatilho do link, ou mensagem manual que desliga a Joana.
+      // Ecos de envios da API também passam; o backend é que os distingue.
       if (key.fromMe === true) {
-        if (!text || !text.trim()) continue;
+        const kind = audio
+          ? 'audio'
+          : media
+            ? media.kind
+            : hasDocument
+              ? 'document'
+              : hasSticker
+                ? 'sticker'
+                : undefined;
+        const outboundText = text && String(text).trim() ? String(text).slice(0, 8000) : '';
+        if (!outboundText && !kind) continue;
         if (LOG_WEBHOOK) {
           console.log(
-            `[wa-verify] chatbot admin trigger instance=${instance} to=${contactNumber}`,
+            `[wa-verify] chatbot admin outbound instance=${instance} to=${contactNumber}${
+              kind ? ` kind=${kind}` : ''
+            }`,
           );
         }
 
         const triggerPayload = {
           recipientNumber: contactNumber,
-          text: String(text).slice(0, 8000),
+          text: outboundText,
+          ...(kind ? { kind } : {}),
           fromMe: true,
           instance: instance || undefined,
           externalMessageId,

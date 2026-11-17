@@ -21,7 +21,7 @@ const COMMUNITY_INTERNAL_SECRET = process.env.COMMUNITY_INTERNAL_SECRET || '';
 
 /** Instâncias Evolution que processam gatilhos em conversas diretas (ex.: «link para agendar chamada»). */
 function getChatbotInstances() {
-  const raw = process.env.EVOLUTION_CHATBOT_INSTANCES || '';
+  const raw = process.env.EVOLUTION_CHATBOT_INSTANCES || 'comunidade MEO';
   return raw
     .split(',')
     .map((s) => s.trim())
@@ -374,12 +374,19 @@ async function handleChatbot(body) {
         );
       }
 
+      const pushName = String(
+        (item && item.pushName) || (body && body.pushName) || '',
+      )
+        .trim()
+        .slice(0, 80);
+
       const inboundPayload = {
         senderNumber: contactNumber,
         text: String(text).slice(0, 8000),
         fromMe: false,
         instance: instance || undefined,
         externalMessageId,
+        ...(pushName ? { pushName } : {}),
       };
 
       if (!shouldForwardChatbotTrigger(inboundPayload)) {

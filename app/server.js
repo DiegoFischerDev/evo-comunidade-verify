@@ -92,9 +92,9 @@ function cloneWithoutMediaBytes(value, depth = 0) {
 
 /**
  * A Evolution não grava a mensagem (DATABASE_SAVE_DATA_NEW_MESSAGE=false).
- * O getBase64 precisa da própria nota, com mediaKey, e não só do id.
+ * O getBase64 precisa da própria nota/mídia, com mediaKey, e não só do id.
  */
-function audioDownloadMessage(item) {
+function mediaDownloadMessage(item) {
   const key = item && item.key;
   const message = item && item.message;
   if (!key || !key.id || !message || typeof message !== 'object') return null;
@@ -119,6 +119,11 @@ function audioDownloadMessage(item) {
   return { key: lookupKey, message: cleaned };
 }
 
+/** @deprecated alias — notas de voz usam a mesma ficha. */
+function audioDownloadMessage(item) {
+  return mediaDownloadMessage(item);
+}
+
 /** Nota de voz (PTT) ou áudio. O ficheiro fica na Evolution; o backend é que o descarrega. */
 function extractAudio(message) {
   const content = unwrapMessageContent(message);
@@ -137,12 +142,13 @@ function extractAudio(message) {
  */
 function extractMedia(message) {
   if (!message || typeof message !== 'object') return null;
-  const img = message.imageMessage;
-  const vid = message.videoMessage;
+  const content = unwrapMessageContent(message) || message;
+  const img = content.imageMessage;
+  const vid = content.videoMessage;
   if (img && typeof img === 'object') {
     return {
       kind: 'image',
-      base64: img.base64 || message.base64 || '',
+      base64: img.base64 || content.base64 || message.base64 || '',
       mimeType: img.mimetype || 'image/jpeg',
       fileName: img.fileName || '',
       caption: img.caption || '',
@@ -151,12 +157,50 @@ function extractMedia(message) {
   if (vid && typeof vid === 'object') {
     return {
       kind: 'video',
-      base64: vid.base64 || message.base64 || '',
+      base64: vid.base64 || content.base64 || message.base64 || '',
       mimeType: vid.mimetype || 'video/mp4',
       fileName: vid.fileName || '',
       caption: vid.caption || '',
     };
   }
+  return null;
+}
+
+/**
+ * Imagem ou documento na DM do cliente (CRM). Sem base64 — o backend descarrega na Evolution.
+ * Vídeo e sticker ficam de fora.
+ */
+function extractClientInboundFile(message) {
+  const content = unwrapMessageContent(message);
+  if (!content || typeof content !== 'object') return null;
+
+  const img = content.imageMessage;
+  if (img && typeof img === 'object') {
+    return {
+      kind: 'image',
+      mimeType: typeof img.mimetype === 'string' ? img.mimetype : 'image/jpeg',
+      fileName: typeof img.fileName === 'string' ? img.fileName : '',
+      caption: typeof img.caption === 'string' ? img.caption : '',
+    };
+  }
+
+  const doc =
+    content.documentMessage ||
+    (content.documentWithCaptionMessage &&
+      content.documentWithCaptionMessage.message &&
+      content.documentWithCaptionMessage.message.documentMessage);
+  if (doc && typeof doc === 'object') {
+    return {
+      kind: 'document',
+      mimeType: typeof doc.mimetype === 'string' ? doc.mimetype : '',
+      fileName:
+        (typeof doc.fileName === 'string' && doc.fileName) ||
+        (typeof doc.title === 'string' && doc.title) ||
+        '',
+      caption: typeof doc.caption === 'string' ? doc.caption : '',
+    };
+  }
+
   return null;
 }
 
@@ -381,12 +425,19 @@ async function handleChatbot(body) {
       const text = extractMessageText(item.message);
       const audio = extractAudio(item.message);
       const media = extractMedia(item.message);
+      const clientFile = key.fromMe === true ? null : extractClientInboundFile(item.message);
       const content = unwrapMessageContent(item.message);
-      const hasDocument = Boolean(content && content.documentMessage);
+      const hasDocument = Boolean(
+        content &&
+          (content.documentMessage ||
+            (content.documentWithCaptionMessage &&
+              content.documentWithCaptionMessage.message &&
+              content.documentWithCaptionMessage.message.documentMessage)),
+      );
       const hasSticker = Boolean(content && content.stickerMessage);
       const hasAdminMedia =
         key.fromMe === true && (Boolean(media) || hasDocument || hasSticker);
-      if ((!text || !text.trim()) && !audio && !hasAdminMedia) continue;
+      if ((!text || !text.trim()) && !audio && !hasAdminMedia && !clientFile) continue;
 
       const contactNumber = extractDirectContactPhone(key);
       if (!contactNumber) {
@@ -455,12 +506,12 @@ async function handleChatbot(body) {
         continue;
       }
 
-      // Cliente (!fromMe): automações configuráveis no admin.
+      // Cliente (!fromMe): Joana / automações; imagem e documento → anexo CRM.
       if (LOG_WEBHOOK) {
         console.log(
           `[wa-verify] chatbot client inbound instance=${instance} from=${contactNumber}${
             audio ? ' audio' : ''
-          }`,
+          }${clientFile ? ` ${clientFile.kind}` : ''}`,
         );
       }
 
@@ -470,26 +521,47 @@ async function handleChatbot(body) {
         .trim()
         .slice(0, 80);
 
-      const mediaMessage = audio ? audioDownloadMessage(item) : null;
-      const inboundPayload = audio
-        ? {
-            senderNumber: contactNumber,
-            text: '',
-            kind: 'audio',
-            fromMe: false,
-            instance: instance || undefined,
-            externalMessageId,
-            ...(mediaMessage ? { mediaMessage } : {}),
-            ...(pushName ? { pushName } : {}),
-          }
-        : {
-            senderNumber: contactNumber,
-            text: String(text).slice(0, 8000),
-            fromMe: false,
-            instance: instance || undefined,
-            externalMessageId,
-            ...(pushName ? { pushName } : {}),
-          };
+      let inboundPayload;
+      if (audio) {
+        const mediaMessage = mediaDownloadMessage(item);
+        inboundPayload = {
+          senderNumber: contactNumber,
+          text: '',
+          kind: 'audio',
+          fromMe: false,
+          instance: instance || undefined,
+          externalMessageId,
+          ...(mediaMessage ? { mediaMessage } : {}),
+          ...(pushName ? { pushName } : {}),
+        };
+      } else if (clientFile) {
+        const mediaMessage = mediaDownloadMessage(item);
+        const caption =
+          (clientFile.caption && String(clientFile.caption).trim()) ||
+          (text && String(text).trim()) ||
+          '';
+        inboundPayload = {
+          senderNumber: contactNumber,
+          text: caption.slice(0, 8000),
+          kind: clientFile.kind,
+          fromMe: false,
+          instance: instance || undefined,
+          externalMessageId,
+          ...(mediaMessage ? { mediaMessage } : {}),
+          ...(clientFile.mimeType ? { mediaMimeType: clientFile.mimeType } : {}),
+          ...(clientFile.fileName ? { mediaFileName: String(clientFile.fileName).slice(0, 200) } : {}),
+          ...(pushName ? { pushName } : {}),
+        };
+      } else {
+        inboundPayload = {
+          senderNumber: contactNumber,
+          text: String(text).slice(0, 8000),
+          fromMe: false,
+          instance: instance || undefined,
+          externalMessageId,
+          ...(pushName ? { pushName } : {}),
+        };
+      }
 
       if (!shouldForwardChatbotTrigger(inboundPayload)) {
         if (LOG_WEBHOOK) {

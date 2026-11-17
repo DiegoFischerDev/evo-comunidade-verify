@@ -65,6 +65,30 @@ function extractMessageText(message) {
   );
 }
 
+/** Conteúdo real quando a nota vem dentro de mensagem temporária ou view-once. */
+function unwrapMessageContent(message) {
+  if (!message || typeof message !== 'object') return null;
+  return (
+    (message.ephemeralMessage && message.ephemeralMessage.message) ||
+    (message.viewOnceMessage && message.viewOnceMessage.message) ||
+    (message.viewOnceMessageV2 && message.viewOnceMessageV2.message) ||
+    (message.viewOnceMessageV2Extension && message.viewOnceMessageV2Extension.message) ||
+    message
+  );
+}
+
+/** Nota de voz (PTT) ou áudio. O ficheiro fica na Evolution; o backend é que o descarrega. */
+function extractAudio(message) {
+  const content = unwrapMessageContent(message);
+  if (!content || typeof content !== 'object' || !content.audioMessage) return null;
+  const audio = content.audioMessage;
+  if (!audio || typeof audio !== 'object') return null;
+  return {
+    mimeType: typeof audio.mimetype === 'string' ? audio.mimetype : '',
+    seconds: typeof audio.seconds === 'number' ? audio.seconds : undefined,
+  };
+}
+
 /**
  * Extrai a mídia (imagem/vídeo) de uma mensagem da Evolution, incluindo o base64 quando o
  * Webhook Base64 está ativo. Devolve null se não houver mídia suportada.
@@ -313,7 +337,8 @@ async function handleChatbot(body) {
       if (!isDirectChatJid(remoteJid)) continue;
 
       const text = extractMessageText(item.message);
-      if (!text || !text.trim()) continue;
+      const audio = extractAudio(item.message);
+      if ((!text || !text.trim()) && !audio) continue;
 
       const contactNumber = extractDirectContactPhone(key);
       if (!contactNumber) {
@@ -333,8 +358,9 @@ async function handleChatbot(body) {
 
       const externalMessageId = key.id ? String(key.id) : undefined;
 
-      // Admin (fromMe): gatilho manual «link para agendar chamada».
+      // Admin (fromMe): gatilho manual «link para agendar chamada». Nota de voz não dispara.
       if (key.fromMe === true) {
+        if (!text || !text.trim()) continue;
         if (LOG_WEBHOOK) {
           console.log(
             `[wa-verify] chatbot admin trigger instance=${instance} to=${contactNumber}`,
@@ -370,7 +396,9 @@ async function handleChatbot(body) {
       // Cliente (!fromMe): automações configuráveis no admin.
       if (LOG_WEBHOOK) {
         console.log(
-          `[wa-verify] chatbot client inbound instance=${instance} from=${contactNumber}`,
+          `[wa-verify] chatbot client inbound instance=${instance} from=${contactNumber}${
+            audio ? ' audio' : ''
+          }`,
         );
       }
 
@@ -380,14 +408,24 @@ async function handleChatbot(body) {
         .trim()
         .slice(0, 80);
 
-      const inboundPayload = {
-        senderNumber: contactNumber,
-        text: String(text).slice(0, 8000),
-        fromMe: false,
-        instance: instance || undefined,
-        externalMessageId,
-        ...(pushName ? { pushName } : {}),
-      };
+      const inboundPayload = audio
+        ? {
+            senderNumber: contactNumber,
+            text: '',
+            kind: 'audio',
+            fromMe: false,
+            instance: instance || undefined,
+            externalMessageId,
+            ...(pushName ? { pushName } : {}),
+          }
+        : {
+            senderNumber: contactNumber,
+            text: String(text).slice(0, 8000),
+            fromMe: false,
+            instance: instance || undefined,
+            externalMessageId,
+            ...(pushName ? { pushName } : {}),
+          };
 
       if (!shouldForwardChatbotTrigger(inboundPayload)) {
         if (LOG_WEBHOOK) {

@@ -40,7 +40,7 @@ A configuração dos grupos monitorizados, filtros de remetente e lógica de neg
 - `EVOLUTION_API_URL`: URL interna da Evolution (usada pelo backend para buscar mídia quando o webhook não traz base64)
 - `EVOLUTION_CHATBOT_INSTANCES`: instâncias que processam gatilhos em **conversas diretas** (ex.: `comunidade MEO`).
   - **Admin** (`fromMe: true`): «link para agendar chamada» → `POST /rafacall/whatsapp/trigger` (link `/agendar`).
-  - **Cliente** (`fromMe: false`): a Joana (instância de atendimento) e as automações do admin → `POST /whatsapp-automations/inbound`.
+  - **Cliente** (`fromMe: false`): a Joana (instância de atendimento) e as automações do admin → `POST /whatsapp-automations/inbound`. Nota de voz segue o mesmo endpoint com `kind: "audio"`. O ficheiro não vai no webhook; o backend descarrega na Evolution e transcreve.
 
 ### Webhook, Nginx e header `x-webhook-secret`
 
